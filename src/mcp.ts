@@ -20,8 +20,8 @@ type Events = { emit(name: string, data: unknown): void };
 export const AGENT_TOOL = {
   name: "agent",
   description:
-    "Delegate work to Pi child agents: interactive Pi sessions in Rex panes that the user can watch and steer, on any model " +
-    "(for example claude-code/claude-opus-5-5, or antigravity/gemini-4-neon). start returns at once. When a child settles, its final reply " +
+    "Delegate work to Pi child agents: interactive Pi sessions in Rex panes that the user can watch and steer, on a non-Antigravity model " +
+    "(for example claude-code/claude-opus-5-5; antigravity/* is refused). start returns at once. When a child settles, its final reply " +
     "arrives as a new message, so you can end your turn while children run. wait blocks until a child settles and returns its reply " +
     `(max ${MAX_WAIT_S} s per call); use it only for short tasks whose result you need in this turn.`,
   inputSchema: {
@@ -31,7 +31,7 @@ export const AGENT_TOOL = {
       name: { type: "string", description: "Agent name: lowercase letters, digits, - (e.g. tests-auth). wait: omit to wait for any" },
       task: { type: "string", description: "start: the full task. The child does not see this conversation, so include everything it needs" },
       title: { type: "string", description: "start: short title for the agent list" },
-      model: { type: "string", description: "start: provider/model, e.g. claude-code/claude-opus-5-5 (default: the user's default model)" },
+      model: { type: "string", description: "start: provider/model, required, not antigravity/*; e.g. claude-code/claude-opus-5-5" },
       thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh"], description: "start: thinking level" },
       cwd: { type: "string", description: "start: working directory (default: the session's)" },
       worktree: { type: ["boolean", "string"], description: "start: own git worktree on branch agent/<name> (true, or a name)" },
@@ -43,11 +43,14 @@ export const AGENT_TOOL = {
 } as const;
 
 /** Rejects calls that the limits do not allow. Returns an error message, or undefined. */
-export function checkCall(params: Record<string, unknown>, started: Set<string>): string | undefined {
+export function checkCall(params: Record<string, unknown>, started: Set<string>, banned = false): string | undefined {
+  if (banned) return "Antigravity is disabled on this account; the agent tool is off";
   const action = String(params.action ?? "");
   if (!(ACTIONS as readonly string[]).includes(action)) return `unknown action ${action || "(none)"}; use ${ACTIONS.join(", ")}`;
   if (action === "start") {
     if (params.host) return "remote hosts are not supported here";
+    if (typeof params.model !== "string" || !params.model.includes("/")) return "start needs model (provider/model, for example claude-code/claude-opus-5-5)";
+    if (params.model.startsWith("antigravity/")) return "children may not run on antigravity/* models; use another provider";
     if (started.size >= MAX_CHILDREN) return `at most ${MAX_CHILDREN} children at once; stop one first`;
   }
   if ((action === "send" || action === "stop") && (typeof params.name !== "string" || !started.has(params.name)))
@@ -61,6 +64,10 @@ export interface McpServerHandle {
   token: string;
   /** The `mcpServers` entry for ACP session/new and session/resume. */
   acpEntry(): { type: "http"; name: string; url: string; headers: { name: string; value: string }[] };
+  /** Stops every child started from this session. */
+  stopAll(): void;
+  /** After a ban: refuse all calls. */
+  banned: boolean;
   close(): void;
 }
 
@@ -90,7 +97,7 @@ export async function startMcpServer(pi: { events?: Events }): Promise<McpServer
     if (name !== AGENT_TOOL.name) return { isError: true, content: [{ type: "text", text: `unknown tool ${name}` }] };
     const params = { ...args };
     if (params.action === "wait") params.timeout = Math.min(Math.max(1, Number(params.timeout) || MAX_WAIT_S), MAX_WAIT_S);
-    const denied = checkCall(params, started);
+    const denied = checkCall(params, started, handle_.banned);
     if (denied) {
       log({ event: "mcp_denied", action: params.action });
       return { isError: true, content: [{ type: "text", text: denied }] };
@@ -171,6 +178,13 @@ export async function startMcpServer(pi: { events?: Events }): Promise<McpServer
     url,
     token,
     started,
+    banned: false,
+    stopAll: () => {
+      for (const name of [...started]) {
+        void callBridge({ action: "stop", name }, new AbortController().signal);
+        started.delete(name);
+      }
+    },
     acpEntry: () => ({ type: "http", name: "pi", url, headers: [{ name: "Authorization", value: `Bearer ${token}` }] }),
     close: () => {
       server.close();

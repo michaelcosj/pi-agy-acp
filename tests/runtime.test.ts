@@ -229,3 +229,18 @@ test("Pi's own agent tool is approved without a dialog", async () => {
   assert.equal(calls.select.length, 0);
   runtime.stop();
 });
+
+test("ban: the suspension notice stops all later turns", async () => {
+  const { runtime } = setup();
+  let banned = 0;
+  runtime.onBan = () => banned++;
+  runtime.gate.arm("banned");
+  const { result } = await run(runtime, [user("banned")]);
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage!, /TOS_VIOLATION/);
+  assert.equal(banned, 1);
+  runtime.gate.arm("hello");
+  const next = await run(runtime, [user("banned"), result, user("hello")]);
+  assert.match(next.result.errorMessage!, /disabled Antigravity/);
+  runtime.stop();
+});

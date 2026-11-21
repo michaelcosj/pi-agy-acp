@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { isAuthRequired } from "./acp/agent.ts";
 import type { PromptBlock } from "./acp/types.ts";
+import { BANNED } from "./ban.ts";
 import { NO_UI } from "./gate.ts";
 import { log } from "./log.ts";
 import { agyLevelFor, FALLBACK_CATALOG } from "./models.ts";
@@ -86,6 +87,7 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
     try {
       const messages = context.messages.filter((m) => m.role !== "system");
       if (!runtime.ctx?.hasUI) return fail(NO_UI);
+      if (runtime.banned) return fail(BANNED);
       // The new user-role messages (typed, a child's result, an extension's)
       // go to agy as one prompt. Turns that you did not type use the budget.
       const decision = runtime.gate.decide(messages as any, (m: any) => runtime.isDisplayOnly(m));
@@ -151,12 +153,14 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
       if (usage) output.usage = usage;
       output.providerThinkingLevel = level;
       log({ event: "prompt_end", stopReason: result.stopReason });
+      if (runtime.checkBan(translator.text)) return fail(BANNED);
       if (output.stopReason === "aborted") return fail("Cancelled", "aborted");
       if (output.stopReason === "error") return fail(`Antigravity refused the request (${result.stopReason}).`);
       stream.push({ type: "done", reason: output.stopReason as "stop" | "length", message: output });
       stream.end();
     } catch (e) {
-      const message = isAuthRequired(e) ? LOGIN_HINT : (e as Error).message;
+      const raw = (e as Error).message;
+      const message = isAuthRequired(e) ? LOGIN_HINT : runtime.checkBan(raw) ? BANNED : raw;
       log({ event: "prompt_error", error: String(message).slice(0, 200) });
       if (/exited|closed|stopped/i.test(message)) runtime.unbind();
       fail(message, options?.signal?.aborted ? "aborted" : "error");

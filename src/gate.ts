@@ -7,7 +7,12 @@
 // (Pi's auto-retry) are not sent again.
 
 const TOKEN_TTL_MS = 60 * 60_000;
-export const AUTO_TURNS = Number(process.env.PI_ANTIGRAVITY_AUTO_TURNS) || 5;
+/** Turns that you did not type, per typed message. 0 turns them off. */
+export const AUTO_TURNS = budgetFrom(process.env.PI_ANTIGRAVITY_AUTO_TURNS);
+export function budgetFrom(v: string | undefined): number {
+  const n = Number(v);
+  return v?.trim() && Number.isInteger(n) && n >= 0 ? n : 2;
+}
 
 export interface Token {
   text: string;

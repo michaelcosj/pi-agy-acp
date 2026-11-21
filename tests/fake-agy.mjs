@@ -95,6 +95,10 @@ rl.on("line", async (line) => {
         }
         return send({ id: m.id, result: { stopReason: cancelled.has(sid) ? "cancelled" : "end_turn" } });
       }
+      if (/^banned$/.test(text.trim())) {
+        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[warning] This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product." } });
+        return send({ id: m.id, result: { stopReason: "end_turn" } });
+      }
       if (/^pi-agent$/.test(text.trim())) {
         const r = await request("session/request_permission", {
           sessionId: sid,

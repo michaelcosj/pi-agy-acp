@@ -201,3 +201,16 @@ result that wakes Gemini, the subagent rows during a real run.
 - Auto mode only.
 - Policy: Pi is not named in Google's ruling. The design follows the pattern
   that the ruling permits.
+
+## 7. Ban-risk changes (2026-11-21)
+
+Reports since 2026-11-14 of `403 TOS_VIOLATION` suspensions on ACP clients
+(oh-my-pi #19343, T3 Code users), and the FAQ line "Wrapping `agy` inside
+third-party coding agents … is not supported under consumer plans".
+
+- `ban.ts`: the suspension notice (reply text or error) stops all turns and
+  all Pi children; the agent tool refuses calls.
+- Pi children may not use `antigravity/*` again; `start` needs `model`.
+- Automatic-turn budget default 2 (`0` turns it off).
+- `/antigravity-status` shows quota from `agy -p "/usage"` (no model call).
+- No automated test prompts: the spike scripts that prompt Gemini are gone.

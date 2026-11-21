@@ -4,14 +4,27 @@ import { log, LOG_PATH } from "./log.ts";
 import { PROVIDER_ID } from "./models.ts";
 import { createAntigravityProvider } from "./provider.ts";
 import { agyPaths, updateAgyConfig } from "./agy-config.ts";
-import { startMcpServer } from "./mcp.ts";
+import { BANNED } from "./ban.ts";
+import { type McpServerHandle, startMcpServer } from "./mcp.ts";
+import { readUsage, usageLines } from "./usage.ts";
 import { registerSubagentView } from "./subagent-view.ts";
-import { type Binding, MODE, Runtime, SESSION_ENTRY, STEER_PREFIX } from "./runtime.ts";
+import { type Binding, launchFromEnv, MODE, Runtime, SESSION_ENTRY, STEER_PREFIX } from "./runtime.ts";
 
 export default function antigravityExtension(pi: ExtensionAPI): void {
   const runtime = new Runtime();
   runtime.pi = pi as any;
   pi.registerProvider(createAntigravityProvider(runtime));
+  let mcp: McpServerHandle | undefined;
+
+  // Google's suspension notice: stop the children and all automatic turns.
+  runtime.onBan = () => {
+    if (mcp) {
+      mcp.banned = true;
+      mcp.stopAll();
+    }
+    runtime.ctx?.ui.notify(BANNED, "error");
+    runtime.ctx?.ui.setStatus("antigravity", "agy: DISABLED by Google (TOS_VIOLATION)");
+  };
 
   const usingAntigravity = (ctx: ExtensionContext) => ctx.model?.provider === PROVIDER_ID;
 
@@ -45,8 +58,9 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
     ensureAgyConfig(ctx);
     // Pi's agent tool for agy, over an in-process MCP server. Not in a child pi.
     if (!process.env.PI_BRIDGE_PARENT && process.env.PI_ANTIGRAVITY_AGENT_TOOL !== "0") {
-      const mcp = await startMcpServer(pi as any).catch(() => undefined);
-      if (mcp) runtime.mcpServers = () => [mcp.acpEntry()];
+      mcp = await startMcpServer(pi as any).catch(() => undefined);
+      const m = mcp;
+      if (m) runtime.mcpServers = () => [m.acpEntry()];
     }
   });
   pi.on("session_tree", (_e, ctx) => restore(ctx));
@@ -127,19 +141,29 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
 
   // ---- commands ----
   pi.registerCommand("antigravity-status", {
-    description: "Show the Antigravity CLI, sign-in, session, and mode",
+    description: "Show the Antigravity CLI, sign-in, quota, session, and mode",
     handler: async (_args, ctx) => {
       runtime.ctx = ctx as any;
       try {
         const agy = await runtime.ensure();
         const probe = runtime.catalog.length ? { catalog: runtime.catalog } : await runtime.probe();
         if (probe) runtime.catalog = probe.catalog;
+        const command = launchFromEnv().command;
+        const usage = command.endsWith("agy_acp_server")
+          ? ["  (needs the agy CLI)"]
+          : await readUsage(command).then(
+              (rows) => (rows.length ? usageLines(rows) : ["  (agy printed no quota)"]),
+              (e) => [`  (could not read: ${(e as Error).message.split("\n")[0]})`],
+            );
         const lines = [
+          ...(runtime.banned ? [BANNED] : []),
           `agy ${agy.version ?? "?"}: ${probe ? "signed in" : "NOT signed in (run agy)"}${runtime.tier ? ` · ${runtime.tier}` : ""}`,
           `Session: ${runtime.binding?.sessionId ?? "none yet"} · mode: ${MODE} (fixed)`,
+          "Quota:",
+          ...usage,
           `Models: ${runtime.catalog.map((e) => e.id).join(", ") || "?"}`,
           `Agent tool (MCP): ${runtime.mcpServers().length ? "on" : "off"}`,
-          `Turns that you did not type: ${runtime.gate.autoTurns}/${runtime.gate.budget} since your last message`,
+          `Turns that you did not type: ${runtime.gate.budget ? `${runtime.gate.autoTurns}/${runtime.gate.budget} since your last message` : "off"}`,
           `agy subagents: ${runtime.subagents.list.length ? runtime.subagents.list.map((x) => `${x.role} [${x.status}]`).join(", ") : "none"}`,
           process.env.PI_ANTIGRAVITY_LOG === "1" ? `Log: ${LOG_PATH}` : "Log: off (PI_ANTIGRAVITY_LOG=1)",
         ];

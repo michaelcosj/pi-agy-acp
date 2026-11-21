@@ -1,13 +1,24 @@
 {
-  "name": "pi-antigravity",
+  "name": "pi-agy-acp",
   "version": "0.1.0",
-  "description": "Pi provider that drives the official Antigravity CLI (agy acp) with your Google AI subscription",
+  "description": "Pi provider for Antigravity (Gemini) models through the official agy acp server, on your Google AI subscription",
   "type": "module",
   "license": "MIT",
-  "keywords": ["pi-package", "antigravity", "gemini", "acp"],
-  "files": ["src", "bin", "skills", "README.md", "ARCHITECTURE.md"],
-  "bin": { "pi-agent": "./bin/pi-agent.mjs" },
-  "pi": { "extensions": ["./src/index.ts"] },
+  "keywords": [
+    "pi-package",
+    "antigravity",
+    "gemini",
+    "acp"
+  ],
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
   "scripts": {
     "test": "node --experimental-transform-types --test tests/*.test.ts",
     "check": "tsc --noEmit"
@@ -22,5 +33,11 @@
     "@types/node": "^22.19.0",
     "typescript": "^5.9.3"
   },
-  "engines": { "node": ">=22.19.0" }
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/michaelcosj/pi-agy-acp.git"
+  }
 }

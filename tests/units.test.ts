@@ -4,6 +4,9 @@ import { checkCall } from "../src/mcp.ts";
 import { isPiAgentTool, isSubagentTool, updateAgyConfig } from "../src/agy-config.ts";
 import { readSubagents, readTranscript, transcriptLines } from "../src/subagents.ts";
 import { rosterRows, rowNames } from "../src/subagent-view.ts";
+import { isBanNotice } from "../src/ban.ts";
+import { budgetFrom } from "../src/gate.ts";
+import { parseUsage } from "../src/usage.ts";
 import { TurnGate } from "../src/gate.ts";
 import { agyLevelFor, catalogFromModelsOutput, catalogFromSession, toPiModel } from "../src/models.ts";
 import { describePermission, launchFromEnv } from "../src/runtime.ts";
@@ -102,8 +105,9 @@ test("stop reasons and usage", () => {
 
 test("agent tool policy", () => {
   const s = new Set<string>();
-  assert.equal(checkCall({ action: "start", name: "a", model: "antigravity/gemini-4-neon", task: "x" }, s), undefined);
-  assert.equal(checkCall({ action: "start", name: "a", task: "x" }, s), undefined);
+  assert.match(checkCall({ action: "start", name: "a", model: "antigravity/gemini-4-neon", task: "x" }, s)!, /may not run on antigravity/);
+  assert.match(checkCall({ action: "start", name: "a", task: "x" }, s)!, /needs model/);
+  assert.match(checkCall({ action: "status" }, s, true)!, /disabled/);
   assert.match(checkCall({ action: "start", name: "a", task: "x", host: "h" }, s)!, /remote hosts/);
   assert.equal(checkCall({ action: "start", name: "a", model: "claude-code/claude-opus-5-5", task: "x" }, s), undefined);
   assert.match(checkCall({ action: "send", name: "other", text: "x" }, s)!, /no child other/);
@@ -196,4 +200,26 @@ test("agy subagents from its records", async () => {
   assert.deepEqual([...rowNames([{ ...list[0], role: "x" }, { ...list[1], role: "x" }]).values()], ["agy-x", "agy-x-2"]);
   assert.deepEqual(readSubagents("not-an-id", brain), []);
   fs.rmSync(brain, { recursive: true });
+});
+
+test("ban notice", () => {
+  assert.ok(isBanNotice("This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product."));
+  assert.ok(isBanNotice('{"error":{"code":403,"details":[{"reason":"TOS_VIOLATION"}]}}'));
+  assert.ok(!isBanNotice("All tests pass."));
+  assert.ok(!isBanNotice(`${"x".repeat(3000)} TOS_VIOLATION`));
+});
+
+test("budget from env", () => {
+  assert.equal(budgetFrom(undefined), 2);
+  assert.equal(budgetFrom("0"), 0);
+  assert.equal(budgetFrom("4"), 4);
+  assert.equal(budgetFrom("x"), 2);
+});
+
+test("usage from agy -p /usage", () => {
+  const rows = parseUsage("Gemini Models\tWeekly Limit Remaining\t100%\t2026-11-28T13:24:16Z\nClaude and GPT models\tFive Hour Limit Remaining\t80%\t1970-01-01T00:00:00Z\nnoise\n");
+  assert.deepEqual(rows, [
+    { group: "Gemini Models", window: "Weekly Limit Remaining", remaining: "100%", resets: "2026-11-28T13:24:16Z" },
+    { group: "Claude and GPT models", window: "Five Hour Limit Remaining", remaining: "80%", resets: undefined },
+  ]);
 });

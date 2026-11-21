@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { AgyProcess, isAuthRequired } from "./acp/agent.ts";
 import type { ConfigOption, NewSessionResult, PermissionRequest, PermissionResponse, SessionNotification } from "./acp/types.ts";
+import { isBanNotice } from "./ban.ts";
 import { TurnGate } from "./gate.ts";
 import { isPiAgentTool, isSubagentTool, PI_ENV } from "./agy-config.ts";
 import { log } from "./log.ts";
@@ -72,6 +73,9 @@ export class Runtime {
   extraEnv: Record<string, string> = {};
   /** MCP servers for session/new and session/resume (Pi's agent tool). */
   mcpServers: () => unknown[] = () => [];
+  /** Set when Google's suspension notice arrives. Then no more turns run. */
+  banned = false;
+  onBan: (() => void) | undefined;
   /** agy's own subagents of the bound session (read-only). */
   readonly subagents = new SubagentWatcher(
     () => this.binding?.sessionId,
@@ -207,6 +211,20 @@ export class Runtime {
     return m.role === "user" && isOwnText(m);
   }
 
+  /** Google's suspension notice arrived: stop all automatic work. */
+  ban() {
+    if (this.banned) return;
+    this.banned = true;
+    log({ event: "banned" });
+    this.onBan?.();
+  }
+
+  /** Checks text from agy for the suspension notice. */
+  checkBan(text: string | undefined): boolean {
+    if (isBanNotice(text)) this.ban();
+    return this.banned;
+  }
+
   markSeen() {
     if (!this.binding) return;
     this.binding.seenAt = Date.now();
@@ -298,6 +316,7 @@ export class Runtime {
     w.translator.finish();
     const text = w.translator.text.trim();
     this.ctx?.ui.setStatus("antigravity", undefined);
+    this.checkBan(text);
     log({ event: "wake_end", chars: text.length });
     if (!text) return;
     // display only: no triggerTurn, so Pi starts no model call.
