@@ -8,7 +8,7 @@ test("MCP server: auth, tools/list, tools/call through agent-bridge:call", async
     emit(name: string, d: any) {
       if (name !== "agent-bridge:call") return;
       d.accept();
-      calls.push(d.params);
+      calls.push({ ...d.params, notify: d.notify });
       const p = d.params;
       if (p.action === "start") d.reply({ text: `Started agent ${p.name}.` });
       else if (p.action === "wait") setTimeout(() => d.reply({ text: `Agent ${p.name} finished:\nall green` }), 20);
@@ -32,13 +32,14 @@ test("MCP server: auth, tools/list, tools/call through agent-bridge:call", async
   assert.deepEqual(list.result.tools.map((t: any) => t.name), ["agent"]);
 
   const call = (args: unknown) => rpc("tools/call", { name: "agent", arguments: args });
-  const denied = await call({ action: "start", name: "w", model: "antigravity/gemini-4-neon", task: "x" });
+  const denied = await call({ action: "hosts" });
   assert.equal(denied.result.isError, true);
-  assert.match(denied.result.content[0].text, /may not run on antigravity/);
+  assert.match(denied.result.content[0].text, /unknown action/);
 
   const started = await call({ action: "start", name: "w", model: "claude-code/claude-opus-5-5", task: "run the tests" });
   assert.equal(started.result.isError, undefined);
   assert.match(started.result.content[0].text, /Started agent w/);
+  assert.equal(calls.at(-1).notify, true);
 
   const waited = await call({ action: "wait", name: "w", timeout: 99999 });
   assert.match(waited.result.content[0].text, /all green/);

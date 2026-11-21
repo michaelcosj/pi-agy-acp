@@ -53,11 +53,34 @@ async function run(runtime: Runtime, messages: any[], options: any = {}) {
   return { events, result: await s.result() };
 }
 
-test("refuses a turn with no typed input", async () => {
+test("a message that you did not type runs as an automatic turn", async () => {
   const { runtime } = setup();
-  const { result } = await run(runtime, [user("hello")]);
-  assert.equal(result.stopReason, "error");
-  assert.match(result.errorMessage!, /only prompts that you type/);
+  const { result } = await run(runtime, [user("Agent a finished:\nhello")]);
+  assert.equal(result.stopReason, "stop");
+  assert.equal(runtime.gate.autoTurns, 1);
+  runtime.stop();
+});
+
+test("the automatic-turn budget stops a loop until you type", async () => {
+  const { runtime } = setup();
+  const msgs: any[] = [];
+  for (let i = 0; i < runtime.gate.budget; i++) {
+    msgs.push(user(`Agent a finished: ${i}`, 100 + i));
+    const r = await run(runtime, msgs);
+    assert.equal(r.result.stopReason, "stop");
+    msgs.push(r.result);
+  }
+  msgs.push(user("Agent b finished", 200));
+  const refused = await run(runtime, msgs);
+  assert.match(refused.result.errorMessage!, /did not type/);
+  msgs.push(refused.result);
+  runtime.gate.arm("go on");
+  msgs.push(user("go on", 201));
+  const r = await run(runtime, msgs);
+  assert.equal(r.result.stopReason, "stop");
+  // Both new messages went in one prompt.
+  assert.match((r.result.content[0] as any).text, /Agent b finished[\s\S]*go on/);
+  assert.equal(runtime.gate.autoTurns, 0);
   runtime.stop();
 });
 
@@ -69,13 +92,14 @@ test("refuses when there is no UI", async () => {
   runtime.stop();
 });
 
-test("a token is used once: a retry of the same turn is refused", async () => {
+test("a retry of a turn that agy got is not sent again", async () => {
   const { runtime } = setup();
   runtime.gate.arm("hello");
-  const first = await run(runtime, [user("hello")]);
+  const msg = user("hello");
+  const first = await run(runtime, [msg]);
   assert.equal(first.result.stopReason, "stop");
-  const retry = await run(runtime, [user("hello")]);
-  assert.equal(retry.result.stopReason, "error");
+  const retry = await run(runtime, [msg, { ...first.result, stopReason: "error" }]);
+  assert.match(retry.result.errorMessage!, /Nothing new/);
   runtime.stop();
 });
 
@@ -188,27 +212,11 @@ test("auto only: the session is set to auto", async () => {
   assert.equal(runtime.mode, "auto");
 });
 
-test("deny: a subagent tool that runs cancels the turn with an error", async () => {
+test("an agy subagent call runs and starts the subagent watch", async () => {
   const { runtime } = setup();
   runtime.gate.arm("subagent");
   const { result } = await run(runtime, [user("subagent")]);
-  assert.equal(result.stopReason, "error");
-  assert.match(result.errorMessage!, /ran invoke_subagent, which is denied/);
-});
-
-test("deny: a permission request for a subagent tool is rejected without a dialog", async () => {
-  const { runtime, calls } = setup({ select: "Allow" });
-  runtime.gate.arm("ask-subagent");
-  const { result } = await run(runtime, [user("ask-subagent")]);
-  const text = result.content.map((b: any) => b.text ?? "").join("");
-  assert.match(text, /outcome r/);
-  assert.equal(calls.select.length, 0);
-});
-
-test("deny: /swarm is refused before agy", async () => {
-  const { runtime } = setup();
-  runtime.gate.arm("/swarm build it");
-  const { result } = await run(runtime, [user("/swarm build it")]);
-  assert.match(result.errorMessage!, /\/swarm is turned off/);
-  assert.equal(runtime.process, undefined);
+  assert.equal(result.stopReason, "stop");
+  assert.match(result.content.map((b: any) => b.text ?? "").join(""), /invoke_subagent/);
+  runtime.stop();
 });

@@ -96,18 +96,8 @@ rl.on("line", async (line) => {
         return send({ id: m.id, result: { stopReason: cancelled.has(sid) ? "cancelled" : "end_turn" } });
       }
       if (/^subagent$/.test(text.trim())) {
-        update(sid, { sessionUpdate: "tool_call", toolCallId: "sa", title: "Running invoke_subagent", kind: "other", status: "in_progress" });
-        cancelled.delete(sid);
-        for (let i = 0; i < 50 && !cancelled.has(sid); i++) await new Promise((r) => setTimeout(r, 20));
-        return send({ id: m.id, result: { stopReason: cancelled.has(sid) ? "cancelled" : "end_turn" } });
-      }
-      if (/\bask-subagent\b/.test(text)) {
-        const r = await request("session/request_permission", {
-          sessionId: sid,
-          toolCall: { toolCallId: "sa2", title: "Run invoke_subagent?", kind: "other" },
-          options: [{ optionId: "a", name: "Allow", kind: "allow_once" }, { optionId: "r", name: "Reject", kind: "reject_once" }],
-        });
-        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `outcome ${r?.outcome?.optionId}` } });
+        update(sid, { sessionUpdate: "tool_call", toolCallId: "sa", title: "Run invoke_subagent", kind: "other", status: "in_progress", rawInput: { Role: "counter", Prompt: "x" } });
+        update(sid, { sessionUpdate: "tool_call_update", toolCallId: "sa", title: "Run invoke_subagent", kind: "other", status: "completed" });
         return send({ id: m.id, result: { stopReason: "end_turn" } });
       }
       if (/\bwake\b/.test(text)) {

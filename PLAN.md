@@ -19,10 +19,9 @@ Sources: [T3 Code ruling](https://discuss.ai.google.dev/t/tos-clarification-is-t
 
 | Rule | How the code keeps it |
 |---|---|
-| A human drives every prompt that Pi sends | Gate: only turns from `input` with `source: "interactive"` and a UI. No retry, no auto-compaction, no branch summary, no prompts from extensions, RPC, or print mode. |
+| A human drives the session | An interactive Pi with a UI is required. As in T3 Code, a child's result can start a turn; a budget of 5 turns that you did not type per typed message stops loops. No auto-compaction, no branch summary. |
 | Do not override agy's system identity | Only a short `systemPrompt.append` note about the Pi UI. |
-| agy is not a backend worker | agy keeps all its tools. **Accepted risk:** Pi adds its `agent` tool over MCP (your decision, 2026-11-21). |
-| No other agent drives agy | The bridge refuses `antigravity/*` children. Pi children run on other providers. |
+| agy is not a backend worker | agy keeps all its tools and its subagents. Pi adds its `agent` tool over MCP, as T3 Code adds `delegate_task`. |
 | No token access, no proxy | Pi never reads `~/.gemini` credentials. Auth status comes from ACP only. |
 
 agy's own wakes (`/goal`, background tasks, background subagents,
@@ -55,7 +54,7 @@ src/
   acp/agent.ts       AgyProcess: spawn, initialize, sessions, idle stop
   provider.ts        createProvider: ambient auth check, models, stream
   models.ts          catalog from configOptions (model × thought_level)
-  gate.ts            human-driven turn gate
+  gate.ts            which messages start a turn; automatic-turn budget
   stream.ts          one Pi turn → session/prompt; updates → Pi events
   translate.ts       session/update → text / thinking / tool lines
   permissions.ts     request_permission → ctx.ui.select
@@ -99,11 +98,9 @@ spike/               probes and transcripts
 
 ### 4.3 Turn gate (`gate.ts`)
 
-- The `input` handler records `{text, source, at}`. `stream()` accepts the
-  turn only when the last context message is a user message, it matches the
-  recorded input, the source is `interactive`, and `ctx.hasUI` is true.
-- Otherwise: error "Antigravity accepts only prompts that you type"
-  (non-retryable).
+- Superseded by section 5: the new user-role messages after the last
+  finished reply go to agy as one prompt; typed input (`source:
+  "interactive"`) refills a budget of automatic turns.
 
 ### 4.4 Stream (`stream.ts`, `translate.ts`)
 
@@ -155,27 +152,30 @@ spike/               probes and transcripts
 `/antigravity-status`, `/antigravity-mode`, `/agy <command> [args]` (sends
 `/<command>` to agy, for example `/agy goal ...`, `/agy swarm ...`).
 
-## 5. Phase 2: Pi's agent tool, auto only, subagent deny
+## 5. Phase 2: agent tool, automatic turns, agy subagents read-only
 
-Decisions (2026-11-21): agy runs only in auto mode; agy's subagent and
-swarm tools are denied; Pi's `agent` tool goes to agy over an in-process
-MCP server (you accepted the risk). The background-command bridge was
-removed.
+Decisions (2026-11-21), after a check of T3 Code's code and issues showed
+that T3 Code gives agy orchestration tools over MCP, wakes the parent on a
+child's result, and runs agy's subagents:
 
-- `agy acp --process-per-session` (needed for HTTP MCP, probe confirmed).
-- `mcp.ts`: streamable-HTTP MCP on 127.0.0.1 with a bearer token, one tool
-  `agent` (start, send, wait, status, stop). Calls go to agent-bridge over
-  the Pi event bus (`agent-bridge:call`, notify forced off). `antigravity/*`
-  children refused; `wait` capped at 240 s per call.
-- Auto: `session/set_config_option mode=auto` on every session; a session
-  that refuses does not run; a mode change is reverted.
-- Deny: PreToolUse hook in `~/.gemini/config/hooks.json`, active only with
-  `PI_ANTIGRAVITY=1`; permission requests for these tools rejected; a
-  denied tool that runs cancels the turn. `/swarm`, `/teamwork` refused.
-- `mcp(pi/*)` added to agy's allow list so the tool runs without a prompt.
+- `agy acp --process-per-session` (needed for HTTP MCP).
+- `mcp.ts`: Pi's `agent` tool for agy, over streamable-HTTP MCP on
+  127.0.0.1 with a bearer token. Calls go to agent-bridge over the event bus
+  (`agent-bridge:call`, `notify: true`), so a child's result posts to the
+  Pi session. Any model, `antigravity/*` included.
+- `gate.ts`: any new user-role message starts a turn. All new messages go
+  in one prompt. Turns that you did not type use a budget (5) that typed
+  text refills. Messages that agy got are not sent again.
+- Auto mode only: set on every session, reverted if agy leaves it.
+- agy subagents and swarms allowed, shown read-only: `subagents.ts` reads
+  agy's `brain/` records (role, state, idle reply, transcript);
+  `subagent-view.ts` sends rows to agent-bridge (`agent-bridge:external`)
+  and opens a viewer on Enter (`agent-bridge:external-open`).
+- `agy-config.ts`: adds `mcp(pi/*)` to agy's allow list; removes the old
+  deny hook.
 
-Live checks still open (need a typed prompt): the hook really denies, the
-MCP tool call shape and agy's MCP call timeout, auto mode behaviour.
+Live checks still open: the MCP agent tool from a typed prompt, a child
+result that wakes Gemini, the subagent rows during a real run.
 
 ## 6. Steps
 
@@ -187,7 +187,7 @@ MCP tool call shape and agy's MCP call timeout, auto mode behaviour.
 6. Load in Pi, manual test with a typed prompt.
 7. Spike with real prompts that you type: update kinds, permissions,
    steering, `/compact`, wakes, background command.
-8. Phase 2: MCP agent tool, auto only, subagent deny.
+8. Phase 2: MCP agent tool, automatic turns with a budget, agy subagents read-only.
 9. README with policy notes and limits, ARCHITECTURE.md.
 
 ## 7. Limits (README)
@@ -196,6 +196,6 @@ MCP tool call shape and agy's MCP call timeout, auto mode behaviour.
 - No auto-retry, no auto-compaction, no Pi prompts from extensions or `pi -p`.
 - Branches start a new agy session.
 - Pi child agents only on other providers.
-- agy subagents and swarms are off; auto mode only.
+- Auto mode only.
 - Policy: Pi is not named in Google's ruling. The design follows the pattern
   that the ruling permits.

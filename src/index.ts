@@ -3,8 +3,9 @@ import { isHumanInput } from "./gate.ts";
 import { log, LOG_PATH } from "./log.ts";
 import { PROVIDER_ID } from "./models.ts";
 import { createAntigravityProvider } from "./provider.ts";
-import { deniedCommand, guardPaths, guardStatus, installGuard } from "./guard.ts";
+import { agyPaths, mcpAllowed, MCP_ALLOW_RULE, updateAgyConfig } from "./agy-config.ts";
 import { startMcpServer } from "./mcp.ts";
+import { registerSubagentView } from "./subagent-view.ts";
 import { type Binding, MODE, Runtime, SESSION_ENTRY, STEER_PREFIX } from "./runtime.ts";
 
 export default function antigravityExtension(pi: ExtensionAPI): void {
@@ -25,21 +26,23 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
     runtime.binding = binding ? { ...binding } : undefined;
   }
 
-  // The subagent/swarm deny hook and the allow rule for Pi's agent tool live
-  // in agy's own config. Install or repair them before agy starts.
-  const paths = guardPaths();
-  function ensureGuard(ctx?: ExtensionContext) {
+  // agy's allow rule for Pi's agent tool (and removal of the old deny hook).
+  const paths = agyPaths();
+  function ensureAgyConfig(ctx?: ExtensionContext) {
     try {
-      const changed = installGuard(paths);
+      const changed = updateAgyConfig(paths);
       if (changed.length) ctx?.ui.notify(`pi-antigravity updated agy config:\n${changed.join("\n")}`, "info");
     } catch (e) {
-      ctx?.ui.notify(`pi-antigravity could not install its agy hook: ${(e as Error).message}`, "error");
+      ctx?.ui.notify(`pi-antigravity could not update agy config: ${(e as Error).message}`, "error");
     }
   }
 
+  // agy's own subagents: read-only rows in agent-bridge's list, and a viewer.
+  registerSubagentView(pi, runtime);
+
   pi.on("session_start", async (_e, ctx) => {
     restore(ctx);
-    ensureGuard(ctx);
+    ensureAgyConfig(ctx);
     // Pi's agent tool for agy, over an in-process MCP server. Not in a child pi.
     if (!process.env.PI_BRIDGE_PARENT && process.env.PI_ANTIGRAVITY_AGENT_TOOL !== "0") {
       const mcp = await startMcpServer(pi as any).catch(() => undefined);
@@ -52,7 +55,7 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
     runtime.stop();
   });
 
-  // ---- the gate: only text that you type reaches agy ----
+  // ---- input: typed text refills the gate's budget; steers go to agy now ----
   pi.on("input", (event, ctx) => {
     runtime.ctx = ctx as any;
     if (!usingAntigravity(ctx)) return { action: "continue" };
@@ -116,7 +119,7 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
     }
   });
 
-  // A branch summary would be a prompt that no human typed.
+  // agy keeps its own context, so a Pi branch summary is not useful.
   pi.on("session_before_tree", (event, ctx) => {
     if (!usingAntigravity(ctx) || !event.preparation.userWantsSummary) return;
     return { summary: { summary: "(Branch summaries are off for Antigravity. The next message starts a new Antigravity session.)" } };
@@ -136,10 +139,9 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
           `Session: ${runtime.binding?.sessionId ?? "none yet"} · mode: ${MODE} (fixed)`,
           `Models: ${runtime.catalog.map((e) => e.id).join(", ") || "?"}`,
           `Agent tool (MCP): ${runtime.mcpServers().length ? "on" : "off"}`,
-          (() => {
-            const g = guardStatus(paths);
-            return `Subagent/swarm deny hook: ${g.hook && g.script ? "installed" : "MISSING"} · ${g.mcpAllow ? "mcp(pi/*) allowed" : "mcp(pi/*) NOT allowed"}`;
-          })(),
+          `agy allow rule ${MCP_ALLOW_RULE}: ${mcpAllowed(paths) ? "set" : "MISSING"}`,
+          `Turns that you did not type: ${runtime.gate.autoTurns}/${runtime.gate.budget} since your last message`,
+          `agy subagents: ${runtime.subagents.list.length ? runtime.subagents.list.map((x) => `${x.role} [${x.status}]`).join(", ") : "none"}`,
           process.env.PI_ANTIGRAVITY_LOG === "1" ? `Log: ${LOG_PATH}` : "Log: off (PI_ANTIGRAVITY_LOG=1)",
         ];
         ctx.ui.notify(lines.join("\n"), probe ? "info" : "error");
@@ -153,7 +155,7 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
     description: "Run an Antigravity slash command, for example /agy goal <objective>",
     getArgumentCompletions: (prefix) =>
       runtime.commands
-        .filter((c) => c.name.startsWith(prefix) && !deniedCommand(`/${c.name}`))
+        .filter((c) => c.name.startsWith(prefix))
         .map((c) => ({ value: c.name, label: c.name, description: c.description })),
     handler: async (args, ctx) => {
       runtime.ctx = ctx as any;
@@ -163,9 +165,7 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
         return ctx.ui.notify(list || "No Antigravity commands yet. Send a message first.", "info");
       }
       if (!usingAntigravity(ctx)) return ctx.ui.notify("Select an antigravity/... model first.", "error");
-      const denied = deniedCommand(`/${text}`);
-      if (denied) return ctx.ui.notify(`/${denied} is turned off in Pi (subagents and swarms are denied).`, "error");
-      // You typed this command: arm the gate and send it as a user message.
+      // You typed this command: it counts as typed input.
       runtime.gate.arm(`/${text}`);
       pi.sendUserMessage(`/${text}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
     },

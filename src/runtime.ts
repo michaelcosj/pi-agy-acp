@@ -5,9 +5,10 @@ import path from "node:path";
 import { AgyProcess, isAuthRequired } from "./acp/agent.ts";
 import type { ConfigOption, NewSessionResult, PermissionRequest, PermissionResponse, SessionNotification } from "./acp/types.ts";
 import { TurnGate } from "./gate.ts";
-import { deniedTool, PI_ENV } from "./guard.ts";
+import { isSubagentTool, PI_ENV } from "./agy-config.ts";
 import { log } from "./log.ts";
 import { catalogFromSession, type CatalogEntry } from "./models.ts";
+import { type Subagent, SubagentWatcher } from "./subagents.ts";
 import { Translator } from "./translate.ts";
 
 export const SESSION_ENTRY = "antigravity-session";
@@ -19,7 +20,8 @@ const WAKE_SETTLE_MS = 1_500;
 
 export const SYSTEM_PROMPT_APPEND =
   "The user reads your replies in Pi, a terminal coding UI that acts as an ACP client. Format replies as Markdown. " +
-  "Tool calls show to the user as one short line each, so summarize important tool results in your reply.";
+  "Tool calls show to the user as one short line each, so summarize important tool results in your reply. " +
+  "When you start Pi child agents with the pi agent tool, each child's final reply arrives later as a new message that starts with \"Agent <name> finished\", so you can end your turn while they run.";
 
 export interface UiLike {
   hasUI: boolean;
@@ -70,8 +72,12 @@ export class Runtime {
   extraEnv: Record<string, string> = {};
   /** MCP servers for session/new and session/resume (Pi's agent tool). */
   mcpServers: () => unknown[] = () => [];
-  /** Set when agy ran a denied subagent or swarm tool; the turn is cancelled. */
-  violation: string | undefined;
+  /** agy's own subagents of the bound session (read-only). */
+  readonly subagents = new SubagentWatcher(
+    () => this.binding?.sessionId,
+    (list) => this.onSubagents?.(list),
+  );
+  onSubagents: ((list: Subagent[]) => void) | undefined;
 
   private agy: AgyProcess | undefined;
   private starting: Promise<AgyProcess> | undefined;
@@ -121,6 +127,7 @@ export class Runtime {
 
   stop() {
     clearTimeout(this.idleTimer);
+    this.subagents.stop();
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.agy?.kill();
@@ -163,6 +170,7 @@ export class Runtime {
     this.applied.clear();
     this.unsubscribe?.();
     this.unsubscribe = agy.subscribe(sessionId, (n) => this.onUpdate(n));
+    this.subagents.kick(30_000);
     // Auto only: a session that cannot switch to auto does not run.
     try {
       await this.setOption(sessionId, "mode", MODE);
@@ -191,6 +199,12 @@ export class Runtime {
       }
       return (m.timestamp ?? 0) > since;
     });
+  }
+
+  /** Messages that Pi shows but agy must not get as a prompt. */
+  isDisplayOnly(m: { role: string; content?: unknown; customType?: string }): boolean {
+    if (typeof m.customType === "string" && m.customType.startsWith("antigravity-")) return true;
+    return m.role === "user" && isOwnText(m);
   }
 
   markSeen() {
@@ -312,10 +326,7 @@ export class Runtime {
     this.touch();
   }
 
-  /**
-   * Layer 3 of the subagent deny, and auto-only: cancel when agy runs a
-   * denied tool or leaves auto mode, whether a prompt is open or not.
-   */
+  /** Auto mode only; an agy subagent call starts the subagent watch. */
   private police(n: SessionNotification) {
     const u = n.update as any;
     if (u.sessionUpdate === "current_mode_update" && u.currentModeId !== MODE) {
@@ -325,25 +336,13 @@ export class Runtime {
       this.ctx?.ui.notify(`Antigravity left ${MODE} mode (${u.currentModeId}); Pi switched it back.`, "warning");
       return;
     }
-    if (u.sessionUpdate !== "tool_call" && u.sessionUpdate !== "tool_call_update") return;
-    const tool = deniedTool(u);
-    if (!tool) return;
-    this.violation = tool;
-    log({ event: "denied_tool_ran", tool });
-    this.agy?.cancel(n.sessionId);
-    this.ctx?.ui.notify(`Antigravity tried ${tool}. Subagents and swarms are off; the turn was cancelled.`, "warning");
+    if ((u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") && isSubagentTool(u)) this.subagents.kick();
   }
 
   // ---- agent → client requests ----
 
   private async permission(r: PermissionRequest): Promise<PermissionResponse> {
     const ctx = this.ctx;
-    // Layer 2 of the subagent deny.
-    if (deniedTool(r.toolCall ?? {})) {
-      log({ event: "permission_denied_tool" });
-      const reject = r.options?.find((o) => o.kind === "reject_always") ?? r.options?.find((o) => o.kind === "reject_once");
-      return reject ? { outcome: { outcome: "selected", optionId: reject.optionId } } : { outcome: { outcome: "cancelled" } };
-    }
     if (!ctx?.hasUI || !r.options?.length) {
       const reject = r.options?.find((o) => o.kind === "reject_once");
       return reject ? { outcome: { outcome: "selected", optionId: reject.optionId } } : { outcome: { outcome: "cancelled" } };

@@ -8,8 +8,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { isAuthRequired } from "./acp/agent.ts";
 import type { PromptBlock } from "./acp/types.ts";
-import { REFUSAL } from "./gate.ts";
-import { deniedCommand } from "./guard.ts";
+import { NO_UI } from "./gate.ts";
 import { log } from "./log.ts";
 import { agyLevelFor, FALLBACK_CATALOG } from "./models.ts";
 import type { Runtime } from "./runtime.ts";
@@ -32,16 +31,18 @@ function textOf(content: any): string {
     .join("\n");
 }
 
-/** User message → ACP prompt blocks. */
-export function promptBlocks(message: Msg, prefix?: string): PromptBlock[] {
+/** User messages → ACP prompt blocks. */
+export function promptBlocks(messages: Msg | Msg[], prefix?: string): PromptBlock[] {
   const blocks: PromptBlock[] = [];
   if (prefix) blocks.push({ type: "text", text: prefix });
-  if (typeof message.content === "string") blocks.push({ type: "text", text: message.content });
-  else
-    for (const c of message.content ?? []) {
-      if (c.type === "text" && c.text) blocks.push({ type: "text", text: c.text });
-      else if (c.type === "image") blocks.push({ type: "image", data: c.data, mimeType: c.mimeType });
-    }
+  for (const message of Array.isArray(messages) ? messages : [messages]) {
+    if (typeof message.content === "string") blocks.push({ type: "text", text: message.content });
+    else
+      for (const c of message.content ?? []) {
+        if (c.type === "text" && c.text) blocks.push({ type: "text", text: c.text });
+        else if (c.type === "image") blocks.push({ type: "image", data: c.data, mimeType: c.mimeType });
+      }
+  }
   return blocks;
 }
 
@@ -84,17 +85,16 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
     let abort: (() => void) | undefined;
     try {
       const messages = context.messages.filter((m) => m.role !== "system");
-      // Gate: a human-typed message must be the reason for this call. Only
-      // that message is sent; text that other extensions add is not.
-      if (!runtime.ctx?.hasUI) return fail(REFUSAL);
-      const index = runtime.gate.take(messages);
-      if (index < 0) {
-        log({ event: "refused", reason: "no token" });
-        return fail(REFUSAL);
+      if (!runtime.ctx?.hasUI) return fail(NO_UI);
+      // The new user-role messages (typed, a child's result, an extension's)
+      // go to agy as one prompt. Turns that you did not type use the budget.
+      const decision = runtime.gate.decide(messages as any, (m: any) => runtime.isDisplayOnly(m));
+      if ("refuse" in decision) {
+        log({ event: "refused", reason: decision.refuse.slice(0, 60) });
+        return fail(decision.refuse);
       }
-      const last = messages[index];
-      const denied = deniedCommand(textOf(last.content));
-      if (denied) return fail(`/${denied} is turned off in Pi (subagents and swarms are denied).`);
+      const { indexes, human } = decision;
+      const fresh = indexes.map((i) => messages[i]);
 
       const cwd = runtime.ctx.cwd;
       const s = await runtime.session(cwd);
@@ -108,9 +108,9 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
       if (level) await runtime.setOption(sessionId, "thought_level", level).catch(() => {});
 
       // Messages that agy has not seen (a new session, or turns on another model).
-      const unseen = runtime.unseen(messages.slice(0, index), s.fresh);
+      const unseen = runtime.unseen(messages.slice(0, indexes[0]), s.fresh);
       let prefix: string | undefined;
-      if (unseen.length) {
+      if (unseen.length && human) {
         const send = await runtime.ctx.ui.confirm(
           "Antigravity",
           `${unseen.length} earlier message${unseen.length === 1 ? " is" : "s are"} not in the Antigravity session. Send ${unseen.length === 1 ? "it" : "them"} as context with your message?`,
@@ -131,7 +131,6 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
         },
       });
       stream.push({ type: "start", partial: output });
-      runtime.violation = undefined;
       runtime.beginPrompt(sessionId, translator);
 
       const sid = sessionId;
@@ -139,8 +138,10 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
       if (options?.signal?.aborted) abort();
       options?.signal?.addEventListener("abort", abort, { once: true });
 
-      log({ event: "prompt", model: model.id, level, history: unseen.length, prefix: !!prefix });
-      const result = await s.agy.prompt(sessionId, promptBlocks(last, prefix));
+      log({ event: "prompt", model: model.id, level, history: unseen.length, prefix: !!prefix, human, messages: fresh.length });
+      runtime.gate.commit(fresh as any, human);
+      if (!human) runtime.ctx?.ui.setStatus("antigravity-auto", `agy: automatic turn ${runtime.gate.autoTurns}/${runtime.gate.budget}`);
+      const result = await s.agy.prompt(sessionId, promptBlocks(fresh, prefix));
       const cancelled = result.stopReason === "cancelled" || !!options?.signal?.aborted;
       translator.finish(cancelled);
       runtime.markSeen();
@@ -150,7 +151,6 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
       if (usage) output.usage = usage;
       output.providerThinkingLevel = level;
       log({ event: "prompt_end", stopReason: result.stopReason });
-      if (runtime.violation) return fail(`Antigravity ran ${runtime.violation}, which is denied in Pi. The turn was cancelled.`);
       if (output.stopReason === "aborted") return fail("Cancelled", "aborted");
       if (output.stopReason === "error") return fail(`Antigravity refused the request (${result.stopReason}).`);
       stream.push({ type: "done", reason: output.stopReason as "stop" | "length", message: output });
@@ -164,6 +164,7 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
       if (abort) options?.signal?.removeEventListener("abort", abort);
       runtime.endPrompt();
       runtime.ctx?.ui.setStatus("antigravity", undefined);
+      runtime.ctx?.ui.setStatus("antigravity-auto", undefined);
     }
   })();
   return stream;

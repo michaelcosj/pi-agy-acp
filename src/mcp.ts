@@ -1,11 +1,9 @@
 // In-process MCP server (streamable HTTP on 127.0.0.1) that gives agy Pi's
-// `agent` tool. agy connects to it through `session/new.mcpServers`. Calls
-// go to agent-bridge over the Pi event bus ("agent-bridge:call").
-//
-// You chose this over the background-command bridge and accepted the risk
-// (an MCP tool that a third-party client supplies). Limits that stay:
-// children never run on antigravity/* models, and their results never post
-// to the Pi session, so Pi never sends agy a prompt that you did not type.
+// `agent` tool, the same way T3 Code gives agy its orchestrator tools. agy
+// connects to it through `session/new.mcpServers`. Calls go to agent-bridge
+// over the Pi event bus ("agent-bridge:call"). A child's result posts to the
+// Pi session when it settles, which starts an Antigravity turn (within the
+// gate's budget of turns that you did not type).
 import crypto from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -22,10 +20,10 @@ type Events = { emit(name: string, data: unknown): void };
 export const AGENT_TOOL = {
   name: "agent",
   description:
-    "Delegate work to Pi child agents: interactive Pi sessions in Rex panes that the user can watch and steer. " +
-    "Children run on non-Gemini models (for example claude-code/claude-opus-5-5); for Gemini workers do the work yourself. " +
-    "start returns at once. wait blocks until a child settles and returns its final reply, or returns early after `timeout` seconds " +
-    `(max ${MAX_WAIT_S}) while children still run: then call wait again. Do not end your turn while children you need still run.`,
+    "Delegate work to Pi child agents: interactive Pi sessions in Rex panes that the user can watch and steer, on any model " +
+    "(for example claude-code/claude-opus-5-5, or antigravity/gemini-4-neon). start returns at once. When a child settles, its final reply " +
+    "arrives as a new message, so you can end your turn while children run. wait blocks until a child settles and returns its reply " +
+    `(max ${MAX_WAIT_S} s per call); use it only for short tasks whose result you need in this turn.`,
   inputSchema: {
     type: "object",
     properties: {
@@ -33,7 +31,7 @@ export const AGENT_TOOL = {
       name: { type: "string", description: "Agent name: lowercase letters, digits, - (e.g. tests-auth). wait: omit to wait for any" },
       task: { type: "string", description: "start: the full task. The child does not see this conversation, so include everything it needs" },
       title: { type: "string", description: "start: short title for the agent list" },
-      model: { type: "string", description: "start (required): provider/model, e.g. claude-code/claude-opus-5-5. antigravity/* is refused" },
+      model: { type: "string", description: "start: provider/model, e.g. claude-code/claude-opus-5-5 (default: the user's default model)" },
       thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh"], description: "start: thinking level" },
       cwd: { type: "string", description: "start: working directory (default: the session's)" },
       worktree: { type: ["boolean", "string"], description: "start: own git worktree on branch agent/<name> (true, or a name)" },
@@ -49,9 +47,6 @@ export function checkCall(params: Record<string, unknown>, started: Set<string>)
   const action = String(params.action ?? "");
   if (!(ACTIONS as readonly string[]).includes(action)) return `unknown action ${action || "(none)"}; use ${ACTIONS.join(", ")}`;
   if (action === "start") {
-    const model = typeof params.model === "string" ? params.model.trim() : "";
-    if (!model) return "start needs model, for example claude-code/claude-opus-5-5 (children may not inherit an Antigravity model)";
-    if (/^antigravity\//i.test(model)) return "children may not run on antigravity/* models. Do Gemini work yourself.";
     if (params.host) return "remote hosts are not supported here";
     if (started.size >= MAX_CHILDREN) return `at most ${MAX_CHILDREN} children at once; stop one first`;
   }
@@ -86,7 +81,8 @@ export async function startMcpServer(pi: { events?: Events }): Promise<McpServer
         done = true;
         resolve(r);
       };
-      pi.events!.emit("agent-bridge:call", { params, signal, reply, accept: () => (accepted = true) });
+      // notify: the child's result posts to this Pi session when it settles.
+      pi.events!.emit("agent-bridge:call", { params, signal, reply, notify: true, accept: () => (accepted = true) });
       if (!accepted) reply({ error: "agent-bridge is not loaded in this Pi (it needs Rex)" });
     });
 
