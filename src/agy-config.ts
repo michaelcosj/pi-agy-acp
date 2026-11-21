@@ -1,9 +1,8 @@
-// pi-antigravity's changes to agy's own config:
-// - adds `mcp(pi/*)` to agy's allow list, so Pi's agent tool runs without a
-//   permission prompt in auto mode;
-// - removes the old subagent-deny hook (pi-antigravity 0.1 before this
-//   change installed it; T3 Code turns off its Antigravity text generation
-//   when ~/.gemini/config/hooks.json has hooks).
+// Clean-up of pi-antigravity's earlier changes to agy's own config:
+// - the `mcp(pi/*)` allow rule in ~/.gemini/antigravity-cli/settings.json
+//   (agy ignores allow rules for MCP tools over ACP; Pi approves its own
+//   agent tool instead, see Runtime.permission);
+// - the old subagent-deny hook in ~/.gemini/config/hooks.json.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -42,24 +41,17 @@ function writeJson(file: string, data: unknown) {
   fs.renameSync(tmp, file);
 }
 
-export function mcpAllowed(p: AgyPaths): boolean {
-  try {
-    return (readJson(p.settingsJson)?.permissions?.allow ?? []).includes(MCP_ALLOW_RULE);
-  } catch {
-    return false;
-  }
-}
-
-/** Adds the allow rule and removes the old hook. Returns what it changed. */
+/** Removes the old allow rule and hook. Returns what it changed. */
 export function updateAgyConfig(p: AgyPaths): string[] {
   const changed: string[] = [];
-  if (!mcpAllowed(p)) {
-    const settings = readJson(p.settingsJson) ?? {};
-    settings.permissions ??= {};
-    const allow: string[] = (settings.permissions.allow ??= []);
-    allow.push(MCP_ALLOW_RULE);
+  const settings = readJson(p.settingsJson);
+  const allow: unknown = settings?.permissions?.allow;
+  if (Array.isArray(allow) && allow.includes(MCP_ALLOW_RULE)) {
+    settings.permissions.allow = allow.filter((x) => x !== MCP_ALLOW_RULE);
+    if (!settings.permissions.allow.length) delete settings.permissions.allow;
+    if (!Object.keys(settings.permissions).length) delete settings.permissions;
     writeJson(p.settingsJson, settings);
-    changed.push(`${p.settingsJson}: added ${MCP_ALLOW_RULE}`);
+    changed.push(`${p.settingsJson}: removed ${MCP_ALLOW_RULE} (agy ignores it over ACP)`);
   }
   const hooks = readJson(p.hooksJson);
   if (hooks && typeof hooks === "object" && OLD_HOOK in hooks) {
@@ -75,6 +67,12 @@ export function updateAgyConfig(p: AgyPaths): string[] {
     } catch {}
   }
   return changed;
+}
+
+/** agy's ACP title for a call of Pi's MCP agent tool: "Run mcp_pi_agent". */
+const PI_AGENT_TITLE = /^Run(?:ning)? mcp_pi_agent\??$/;
+export function isPiAgentTool(t: { title?: string }): boolean {
+  return PI_AGENT_TITLE.test((t.title ?? "").trim());
 }
 
 const SUBAGENT_TITLE = /\b(invoke_subagent|start_subagent)\b/;

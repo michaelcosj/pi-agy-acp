@@ -95,6 +95,15 @@ rl.on("line", async (line) => {
         }
         return send({ id: m.id, result: { stopReason: cancelled.has(sid) ? "cancelled" : "end_turn" } });
       }
+      if (/^pi-agent$/.test(text.trim())) {
+        const r = await request("session/request_permission", {
+          sessionId: sid,
+          toolCall: { toolCallId: "pa", title: "Run mcp_pi_agent", kind: "other" },
+          options: [{ optionId: "a", name: "Allow", kind: "allow_once" }, { optionId: "r", name: "Deny", kind: "reject_once" }],
+        });
+        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `outcome ${r?.outcome?.optionId}` } });
+        return send({ id: m.id, result: { stopReason: "end_turn" } });
+      }
       if (/^subagent$/.test(text.trim())) {
         update(sid, { sessionUpdate: "tool_call", toolCallId: "sa", title: "Run invoke_subagent", kind: "other", status: "in_progress", rawInput: { Role: "counter", Prompt: "x" } });
         update(sid, { sessionUpdate: "tool_call_update", toolCallId: "sa", title: "Run invoke_subagent", kind: "other", status: "completed" });

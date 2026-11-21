@@ -3,7 +3,7 @@ import { isHumanInput } from "./gate.ts";
 import { log, LOG_PATH } from "./log.ts";
 import { PROVIDER_ID } from "./models.ts";
 import { createAntigravityProvider } from "./provider.ts";
-import { agyPaths, mcpAllowed, MCP_ALLOW_RULE, updateAgyConfig } from "./agy-config.ts";
+import { agyPaths, updateAgyConfig } from "./agy-config.ts";
 import { startMcpServer } from "./mcp.ts";
 import { registerSubagentView } from "./subagent-view.ts";
 import { type Binding, MODE, Runtime, SESSION_ENTRY, STEER_PREFIX } from "./runtime.ts";
@@ -26,7 +26,7 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
     runtime.binding = binding ? { ...binding } : undefined;
   }
 
-  // agy's allow rule for Pi's agent tool (and removal of the old deny hook).
+  // Remove pi-antigravity's earlier changes to agy's config.
   const paths = agyPaths();
   function ensureAgyConfig(ctx?: ExtensionContext) {
     try {
@@ -139,7 +139,6 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
           `Session: ${runtime.binding?.sessionId ?? "none yet"} · mode: ${MODE} (fixed)`,
           `Models: ${runtime.catalog.map((e) => e.id).join(", ") || "?"}`,
           `Agent tool (MCP): ${runtime.mcpServers().length ? "on" : "off"}`,
-          `agy allow rule ${MCP_ALLOW_RULE}: ${mcpAllowed(paths) ? "set" : "MISSING"}`,
           `Turns that you did not type: ${runtime.gate.autoTurns}/${runtime.gate.budget} since your last message`,
           `agy subagents: ${runtime.subagents.list.length ? runtime.subagents.list.map((x) => `${x.role} [${x.status}]`).join(", ") : "none"}`,
           process.env.PI_ANTIGRAVITY_LOG === "1" ? `Log: ${LOG_PATH}` : "Log: off (PI_ANTIGRAVITY_LOG=1)",

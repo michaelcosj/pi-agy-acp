@@ -171,8 +171,10 @@ child's result, and runs agy's subagents:
   agy's `brain/` records (role, state, idle reply, transcript);
   `subagent-view.ts` sends rows to agent-bridge (`agent-bridge:external`)
   and opens a viewer on Enter (`agent-bridge:external-open`).
-- `agy-config.ts`: adds `mcp(pi/*)` to agy's allow list; removes the old
-  deny hook.
+- agy asks for every MCP tool in auto mode and ignores `mcp(...)` allow
+  rules over ACP (live test, agy 1.5.12). `Runtime.permission` approves
+  `Run mcp_pi_agent` by itself. `agy-config.ts` removes the old allow rule
+  and the old deny hook.
 
 Live checks still open: the MCP agent tool from a typed prompt, a child
 result that wakes Gemini, the subagent rows during a real run.

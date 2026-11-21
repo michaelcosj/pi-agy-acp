@@ -66,9 +66,10 @@ the last reply, and recent steps. Pi cannot message or stop them; agy owns
 them. The data comes from agy's records in `~/.gemini/antigravity-cli/brain/`
 (ACP does not report subagent steps).
 
-On start, Pi adds `mcp(pi/*)` to agy's allow list in
-`~/.gemini/antigravity-cli/settings.json`, so the agent tool runs without
-a prompt.
+agy asks permission for every MCP tool, also in auto mode, and its
+`settings.json` allow rules (`mcp(pi/*)`, `mcp(*)`) do not apply over ACP.
+So Pi approves calls of its own `agent` tool (`mcp_pi_agent`) by itself;
+other MCP tools still ask. Pi does not change agy's config files.
 
 ## Policy
 

@@ -5,7 +5,7 @@ import path from "node:path";
 import { AgyProcess, isAuthRequired } from "./acp/agent.ts";
 import type { ConfigOption, NewSessionResult, PermissionRequest, PermissionResponse, SessionNotification } from "./acp/types.ts";
 import { TurnGate } from "./gate.ts";
-import { isSubagentTool, PI_ENV } from "./agy-config.ts";
+import { isPiAgentTool, isSubagentTool, PI_ENV } from "./agy-config.ts";
 import { log } from "./log.ts";
 import { catalogFromSession, type CatalogEntry } from "./models.ts";
 import { type Subagent, SubagentWatcher } from "./subagents.ts";
@@ -343,6 +343,15 @@ export class Runtime {
 
   private async permission(r: PermissionRequest): Promise<PermissionResponse> {
     const ctx = this.ctx;
+    // Pi's own agent tool: approve it here. agy asks for MCP tools even in
+    // auto mode, and its settings.json allow rules do not apply over ACP.
+    if (isPiAgentTool(r.toolCall ?? {})) {
+      const allow = r.options?.find((o) => o.kind === "allow_once") ?? r.options?.find((o) => o.kind === "allow_always");
+      if (allow) {
+        log({ event: "permission_auto", tool: "mcp_pi_agent" });
+        return { outcome: { outcome: "selected", optionId: allow.optionId } };
+      }
+    }
     if (!ctx?.hasUI || !r.options?.length) {
       const reject = r.options?.find((o) => o.kind === "reject_once");
       return reject ? { outcome: { outcome: "selected", optionId: reject.optionId } } : { outcome: { outcome: "cancelled" } };

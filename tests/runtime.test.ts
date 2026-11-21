@@ -220,3 +220,12 @@ test("an agy subagent call runs and starts the subagent watch", async () => {
   assert.match(result.content.map((b: any) => b.text ?? "").join(""), /invoke_subagent/);
   runtime.stop();
 });
+
+test("Pi's own agent tool is approved without a dialog", async () => {
+  const { runtime, calls } = setup({ select: "Deny" });
+  runtime.gate.arm("pi-agent");
+  const { result } = await run(runtime, [user("pi-agent")]);
+  assert.match(result.content.map((b: any) => b.text ?? "").join(""), /outcome a/);
+  assert.equal(calls.select.length, 0);
+  runtime.stop();
+});

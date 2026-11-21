@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkCall } from "../src/mcp.ts";
-import { isSubagentTool, mcpAllowed, updateAgyConfig } from "../src/agy-config.ts";
+import { isPiAgentTool, isSubagentTool, updateAgyConfig } from "../src/agy-config.ts";
 import { readSubagents, readTranscript, transcriptLines } from "../src/subagents.ts";
 import { rosterRows, rowNames } from "../src/subagent-view.ts";
 import { TurnGate } from "../src/gate.ts";
@@ -136,24 +136,28 @@ test("subagent tool calls are recognized", () => {
   assert.ok(!isSubagentTool({ title: "Run npm test" }));
 });
 
-test("updateAgyConfig adds the allow rule and removes the old hook, keeping the rest", async () => {
+test("Pi's agent tool title", () => {
+  assert.ok(isPiAgentTool({ title: "Run mcp_pi_agent" }));
+  assert.ok(isPiAgentTool({ title: "Running mcp_pi_agent" }));
+  assert.ok(!isPiAgentTool({ title: "Run mcp_other_agent" }));
+  assert.ok(!isPiAgentTool({ title: "Run mcp_pi_agent_x" }));
+});
+
+test("updateAgyConfig removes the old allow rule and hook, keeping the rest", async () => {
   const fs = await import("node:fs");
   const os = await import("node:os");
   const path = await import("node:path");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agycfg-"));
   const p = { settingsJson: path.join(dir, "settings.json"), hooksJson: path.join(dir, "hooks.json"), oldStateDir: path.join(dir, "state") };
-  fs.writeFileSync(p.settingsJson, JSON.stringify({ trustedWorkspaces: ["/x"], permissions: { allow: ["command(git)"] } }));
+  fs.writeFileSync(p.settingsJson, JSON.stringify({ trustedWorkspaces: ["/x"], permissions: { allow: ["command(git)", "mcp(pi/*)"] } }));
   fs.writeFileSync(p.hooksJson, JSON.stringify({ mine: { PreToolUse: [] }, "pi-antigravity-guard": { enabled: true } }));
   assert.equal(updateAgyConfig(p).length, 2);
-  assert.ok(mcpAllowed(p));
-  const settings = JSON.parse(fs.readFileSync(p.settingsJson, "utf8"));
-  assert.deepEqual(settings.trustedWorkspaces, ["/x"]);
-  assert.deepEqual(settings.permissions.allow, ["command(git)", "mcp(pi/*)"]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(p.settingsJson, "utf8")), { trustedWorkspaces: ["/x"], permissions: { allow: ["command(git)"] } });
   assert.deepEqual(JSON.parse(fs.readFileSync(p.hooksJson, "utf8")), { mine: { PreToolUse: [] } });
   assert.deepEqual(updateAgyConfig(p), []);
-  fs.writeFileSync(p.hooksJson, JSON.stringify({ "pi-antigravity-guard": {} }));
+  fs.writeFileSync(p.settingsJson, JSON.stringify({ trustedWorkspaces: ["/x"], permissions: { allow: ["mcp(pi/*)"] } }));
   updateAgyConfig(p);
-  assert.equal(fs.existsSync(p.hooksJson), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(p.settingsJson, "utf8")), { trustedWorkspaces: ["/x"] });
   fs.rmSync(dir, { recursive: true });
 });
 
