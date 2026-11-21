@@ -9,6 +9,7 @@ import {
 import { isAuthRequired } from "./acp/agent.ts";
 import type { PromptBlock } from "./acp/types.ts";
 import { REFUSAL } from "./gate.ts";
+import { deniedCommand } from "./guard.ts";
 import { log } from "./log.ts";
 import { agyLevelFor, FALLBACK_CATALOG } from "./models.ts";
 import type { Runtime } from "./runtime.ts";
@@ -92,6 +93,8 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
         return fail(REFUSAL);
       }
       const last = messages[index];
+      const denied = deniedCommand(textOf(last.content));
+      if (denied) return fail(`/${denied} is turned off in Pi (subagents and swarms are denied).`);
 
       const cwd = runtime.ctx.cwd;
       const s = await runtime.session(cwd);
@@ -128,6 +131,7 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
         },
       });
       stream.push({ type: "start", partial: output });
+      runtime.violation = undefined;
       runtime.beginPrompt(sessionId, translator);
 
       const sid = sessionId;
@@ -146,6 +150,7 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
       if (usage) output.usage = usage;
       output.providerThinkingLevel = level;
       log({ event: "prompt_end", stopReason: result.stopReason });
+      if (runtime.violation) return fail(`Antigravity ran ${runtime.violation}, which is denied in Pi. The turn was cancelled.`);
       if (output.stopReason === "aborted") return fail("Cancelled", "aborted");
       if (output.stopReason === "error") return fail(`Antigravity refused the request (${result.stopReason}).`);
       stream.push({ type: "done", reason: output.stopReason as "stop" | "length", message: output });

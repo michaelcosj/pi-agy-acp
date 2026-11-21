@@ -6,9 +6,10 @@ official, unmodified `agy acp` server with your Google AI subscription
 
 **agy owns the agent:** its own tools, system prompt, context, compaction,
 subagents, and wakes. **Pi owns the UI:** the prompt box, the stream,
-permission prompts, model and thinking pickers, and sessions. **A bridge
-command** lets agy start Pi child agents (Claude and others) as background
-commands, so Gemini can orchestrate them.
+permission prompts, model and thinking pickers, and sessions. Pi gives
+agy its `agent` tool over an in-process MCP server, so Gemini can
+orchestrate Pi child agents (Claude and others). agy runs only in auto mode.
+agy's own subagent and swarm tools are denied.
 
 ## 1. Policy rules (hard)
 
@@ -20,7 +21,7 @@ Sources: [T3 Code ruling](https://discuss.ai.google.dev/t/tos-clarification-is-t
 |---|---|
 | A human drives every prompt that Pi sends | Gate: only turns from `input` with `source: "interactive"` and a UI. No retry, no auto-compaction, no branch summary, no prompts from extensions, RPC, or print mode. |
 | Do not override agy's system identity | Only a short `systemPrompt.append` note about the Pi UI. |
-| agy is not a backend worker | agy keeps all its tools. Pi gives agy no tools over MCP. |
+| agy is not a backend worker | agy keeps all its tools. **Accepted risk:** Pi adds its `agent` tool over MCP (your decision, 2026-11-21). |
 | No other agent drives agy | The bridge refuses `antigravity/*` children. Pi children run on other providers. |
 | No token access, no proxy | Pi never reads `~/.gemini` credentials. Auth status comes from ACP only. |
 
@@ -63,8 +64,8 @@ src/
   compaction.ts      session_before_compact / session_before_tree handlers
   status.ts          /antigravity-status
   log.ts             /tmp/pi-antigravity-<pid>.jsonl (0600, no prompt text)
-bin/pi-agent         bridge command (Phase 2)
-skills/pi-agent/SKILL.md   instructions for Gemini (Phase 2)
+  mcp.ts             in-process MCP server: Pi's agent tool for agy
+  guard.ts           subagent/swarm deny hook, mcp(pi/*) allow rule
 tests/               node --test with a fake ACP agent
 spike/               probes and transcripts
 ```
@@ -154,31 +155,27 @@ spike/               probes and transcripts
 `/antigravity-status`, `/antigravity-mode`, `/agy <command> [args]` (sends
 `/<command>` to agy, for example `/agy goal ...`, `/agy swarm ...`).
 
-## 5. Phase 2: the bridge for Pi child agents
+## 5. Phase 2: Pi's agent tool, auto only, subagent deny
 
-```
-agy run_command (background): pi-agent wait tests-a
-        │  Unix socket, token from env (agy's terminal inherits it)
-        ▼
-Pi parent (agent-bridge, role "cli")
-        │  start / send / wait / status / stop, notify: false
-        ▼
-child pi in a Rex pane (claude-code/... or another non-antigravity model)
-```
+Decisions (2026-11-21): agy runs only in auto mode; agy's subagent and
+swarm tools are denied; Pi's `agent` tool goes to agy over an in-process
+MCP server (you accepted the risk). The background-command bridge was
+removed.
 
-- `bin/pi-agent`: a Node script. Subcommands `start NAME --model M
-  [--title T] [--task-file F | --task T]`, `send NAME TEXT`,
-  `wait [NAME] [--timeout S]`, `status [NAME]`, `stop NAME`. Exit code is not
-  zero on error.
-- Pi starts `agy acp` with `PI_AG_BRIDGE` (socket path) and `PI_AG_TOKEN`.
-- agent-bridge change (in `~/.dotfiles/nix/config/pi/agent/extensions/agent-bridge`):
-  a `cli` role with methods that call the existing `start/send/wait/status/stop`
-  logic. Children from the CLI always use `notify: false`. Models that
-  start with `antigravity/` are refused.
-- `skills/pi-agent/SKILL.md` tells Gemini: start, then run
-  `pi-agent wait NAME` as a background command, then continue when it
-  finishes.
-- Suggested agy allow rule: `pi-agent *`.
+- `agy acp --process-per-session` (needed for HTTP MCP, probe confirmed).
+- `mcp.ts`: streamable-HTTP MCP on 127.0.0.1 with a bearer token, one tool
+  `agent` (start, send, wait, status, stop). Calls go to agent-bridge over
+  the Pi event bus (`agent-bridge:call`, notify forced off). `antigravity/*`
+  children refused; `wait` capped at 240 s per call.
+- Auto: `session/set_config_option mode=auto` on every session; a session
+  that refuses does not run; a mode change is reverted.
+- Deny: PreToolUse hook in `~/.gemini/config/hooks.json`, active only with
+  `PI_ANTIGRAVITY=1`; permission requests for these tools rejected; a
+  denied tool that runs cancels the turn. `/swarm`, `/teamwork` refused.
+- `mcp(pi/*)` added to agy's allow list so the tool runs without a prompt.
+
+Live checks still open (need a typed prompt): the hook really denies, the
+MCP tool call shape and agy's MCP call timeout, auto mode behaviour.
 
 ## 6. Steps
 
@@ -190,7 +187,7 @@ child pi in a Rex pane (claude-code/... or another non-antigravity model)
 6. Load in Pi, manual test with a typed prompt.
 7. Spike with real prompts that you type: update kinds, permissions,
    steering, `/compact`, wakes, background command.
-8. Phase 2: agent-bridge `cli` role, `bin/pi-agent`, skill.
+8. Phase 2: MCP agent tool, auto only, subagent deny.
 9. README with policy notes and limits, ARCHITECTURE.md.
 
 ## 7. Limits (README)
@@ -199,5 +196,6 @@ child pi in a Rex pane (claude-code/... or another non-antigravity model)
 - No auto-retry, no auto-compaction, no Pi prompts from extensions or `pi -p`.
 - Branches start a new agy session.
 - Pi child agents only on other providers.
+- agy subagents and swarms are off; auto mode only.
 - Policy: Pi is not named in Google's ruling. The design follows the pattern
   that the ruling permits.

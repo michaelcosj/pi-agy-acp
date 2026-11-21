@@ -54,7 +54,10 @@ rl.on("line", async (line) => {
       if (!sessions.has(p.sessionId)) return send({ id: m.id, error: { code: -32602, message: "unknown session" } });
       return send({ id: m.id, result: {} });
     case "session/close":
+      return send({ id: m.id, result: {} });
     case "session/set_config_option":
+      if (p.configId === "mode") process.stderr.write(`mode ${p.value}\n`);
+      if (p.configId === "mode" && process.env.FAKE_AGY_NO_AUTO === "1") return send({ id: m.id, error: { code: -32602, message: "auto not available" } });
       return send({ id: m.id, result: {} });
     case "session/cancel":
       cancelled.add(p.sessionId);
@@ -91,6 +94,21 @@ rl.on("line", async (line) => {
           await new Promise((r) => setTimeout(r, 20));
         }
         return send({ id: m.id, result: { stopReason: cancelled.has(sid) ? "cancelled" : "end_turn" } });
+      }
+      if (/^subagent$/.test(text.trim())) {
+        update(sid, { sessionUpdate: "tool_call", toolCallId: "sa", title: "Running invoke_subagent", kind: "other", status: "in_progress" });
+        cancelled.delete(sid);
+        for (let i = 0; i < 50 && !cancelled.has(sid); i++) await new Promise((r) => setTimeout(r, 20));
+        return send({ id: m.id, result: { stopReason: cancelled.has(sid) ? "cancelled" : "end_turn" } });
+      }
+      if (/\bask-subagent\b/.test(text)) {
+        const r = await request("session/request_permission", {
+          sessionId: sid,
+          toolCall: { toolCallId: "sa2", title: "Run invoke_subagent?", kind: "other" },
+          options: [{ optionId: "a", name: "Allow", kind: "allow_once" }, { optionId: "r", name: "Reject", kind: "reject_once" }],
+        });
+        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `outcome ${r?.outcome?.optionId}` } });
+        return send({ id: m.id, result: { stopReason: "end_turn" } });
       }
       if (/\bwake\b/.test(text)) {
         update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "started in background" } });

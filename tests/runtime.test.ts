@@ -13,8 +13,8 @@ after(() => {
   for (const r of live) r.stop();
 });
 
-function setup(opts: { select?: string; confirm?: boolean; hasUI?: boolean; auth?: boolean } = {}) {
-  const runtime = new Runtime(() => ({ command: process.execPath, args: [FAKE], env: (opts.auth === false ? { FAKE_AGY_AUTH: "0" } : {}) as Record<string, string> }));
+function setup(opts: { select?: string; confirm?: boolean; hasUI?: boolean; auth?: boolean; env?: Record<string, string> } = {}) {
+  const runtime = new Runtime(() => ({ command: process.execPath, args: [FAKE], env: { ...(opts.auth === false ? { FAKE_AGY_AUTH: "0" } : {}), ...opts.env } as Record<string, string> }));
   const calls = { select: [] as string[], confirm: 0, sent: [] as any[], entries: [] as any[], name: undefined as string | undefined, status: [] as (string | undefined)[] };
   const ctx: UiLike = {
     hasUI: opts.hasUI ?? true,
@@ -171,4 +171,44 @@ test("system prompt append is sent on session/new", async () => {
   await run(runtime, [user("hello")]);
   assert.ok(runtime.process?.canAppendSystemPrompt);
   runtime.stop();
+});
+
+test("auto only: a session that cannot switch to auto does not run", async () => {
+  const { runtime } = setup({ env: { FAKE_AGY_NO_AUTO: "1" } });
+  runtime.gate.arm("hello");
+  const { result } = await run(runtime, [user("hello")]);
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage!, /would not switch to auto/);
+});
+
+test("auto only: the session is set to auto", async () => {
+  const { runtime } = setup();
+  runtime.gate.arm("hello");
+  await run(runtime, [user("hello")]);
+  assert.equal(runtime.mode, "auto");
+});
+
+test("deny: a subagent tool that runs cancels the turn with an error", async () => {
+  const { runtime } = setup();
+  runtime.gate.arm("subagent");
+  const { result } = await run(runtime, [user("subagent")]);
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage!, /ran invoke_subagent, which is denied/);
+});
+
+test("deny: a permission request for a subagent tool is rejected without a dialog", async () => {
+  const { runtime, calls } = setup({ select: "Allow" });
+  runtime.gate.arm("ask-subagent");
+  const { result } = await run(runtime, [user("ask-subagent")]);
+  const text = result.content.map((b: any) => b.text ?? "").join("");
+  assert.match(text, /outcome r/);
+  assert.equal(calls.select.length, 0);
+});
+
+test("deny: /swarm is refused before agy", async () => {
+  const { runtime } = setup();
+  runtime.gate.arm("/swarm build it");
+  const { result } = await run(runtime, [user("/swarm build it")]);
+  assert.match(result.errorMessage!, /\/swarm is turned off/);
+  assert.equal(runtime.process, undefined);
 });

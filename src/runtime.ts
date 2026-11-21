@@ -5,12 +5,14 @@ import path from "node:path";
 import { AgyProcess, isAuthRequired } from "./acp/agent.ts";
 import type { ConfigOption, NewSessionResult, PermissionRequest, PermissionResponse, SessionNotification } from "./acp/types.ts";
 import { TurnGate } from "./gate.ts";
+import { deniedTool, PI_ENV } from "./guard.ts";
 import { log } from "./log.ts";
 import { catalogFromSession, type CatalogEntry } from "./models.ts";
 import { Translator } from "./translate.ts";
 
 export const SESSION_ENTRY = "antigravity-session";
-export const MODE_ENTRY = "antigravity-mode";
+/** agy runs only in auto mode in Pi. */
+export const MODE = "auto";
 export const WAKE_MESSAGE = "antigravity-wake";
 const IDLE_STOP_MS = 15 * 60_000;
 const WAKE_SETTLE_MS = 1_500;
@@ -46,7 +48,10 @@ export interface Launch {
 export function launchFromEnv(env: Record<string, string | undefined> = process.env): Launch {
   const command = env.PI_ANTIGRAVITY_COMMAND?.trim() || "agy";
   const args = env.PI_ANTIGRAVITY_ARGS?.trim() ? env.PI_ANTIGRAVITY_ARGS.trim().split(/\s+/) : command.endsWith("agy_acp_server") ? [] : ["acp"];
-  return { command, args, env: {} };
+  // agy acp reports HTTP MCP support only with one worker per session.
+  if (args[0] === "acp" && !args.includes("--process-per-session")) args.push("--process-per-session");
+  // The guard hook acts only on agy processes with this variable.
+  return { command, args, env: { [PI_ENV]: "1" } };
 }
 
 export class Runtime {
@@ -61,8 +66,12 @@ export class Runtime {
   configOptions: ConfigOption[] = [];
   tier: string | undefined;
   mode: string | undefined;
-  /** Extra env for agy (the bridge socket and token). */
+  /** Extra env for agy. */
   extraEnv: Record<string, string> = {};
+  /** MCP servers for session/new and session/resume (Pi's agent tool). */
+  mcpServers: () => unknown[] = () => [];
+  /** Set when agy ran a denied subagent or swarm tool; the turn is cancelled. */
+  violation: string | undefined;
 
   private agy: AgyProcess | undefined;
   private starting: Promise<AgyProcess> | undefined;
@@ -135,7 +144,7 @@ export class Runtime {
     let sessionId: string | undefined;
     if (this.binding && this.binding.cwd === cwd) {
       try {
-        const r = await agy.resumeSession(this.binding.sessionId, cwd);
+        const r = await agy.resumeSession(this.binding.sessionId, cwd, { mcpServers: this.mcpServers() });
         sessionId = this.binding.sessionId;
         this.absorb(r);
       } catch (e) {
@@ -144,7 +153,7 @@ export class Runtime {
       }
     }
     if (!sessionId) {
-      const r = await agy.newSession(cwd, { systemPromptAppend: SYSTEM_PROMPT_APPEND });
+      const r = await agy.newSession(cwd, { systemPromptAppend: SYSTEM_PROMPT_APPEND, mcpServers: this.mcpServers() });
       this.absorb(r);
       sessionId = r.sessionId;
       fresh = true;
@@ -154,7 +163,13 @@ export class Runtime {
     this.applied.clear();
     this.unsubscribe?.();
     this.unsubscribe = agy.subscribe(sessionId, (n) => this.onUpdate(n));
-    if (this.mode && this.mode !== "default") await this.setOption(sessionId, "mode", this.mode).catch(() => {});
+    // Auto only: a session that cannot switch to auto does not run.
+    try {
+      await this.setOption(sessionId, "mode", MODE);
+    } catch (e) {
+      throw new Error(`agy would not switch to ${MODE} mode: ${(e as Error).message}`);
+    }
+    this.mode = MODE;
     return { agy, sessionId, fresh };
   }
 
@@ -225,6 +240,7 @@ export class Runtime {
 
   private onUpdate(n: SessionNotification) {
     this.touch();
+    this.police(n);
     if (this.activePrompt && this.activePrompt.sessionId === n.sessionId) {
       this.activePrompt.translator.update(n.update);
       return;
@@ -243,10 +259,7 @@ export class Runtime {
       this.commands = (n.update as any).availableCommands ?? [];
       return;
     }
-    if (kind === "current_mode_update") {
-      this.mode = (n.update as any).currentModeId;
-      return;
-    }
+    if (kind === "current_mode_update") return;
     if (kind === "session_info_update" || kind === "config_option_update" || kind === "usage_update" || kind === "user_message_chunk") return;
     if (!this.wake) {
       const output = { content: [] as any[] };
@@ -299,10 +312,38 @@ export class Runtime {
     this.touch();
   }
 
+  /**
+   * Layer 3 of the subagent deny, and auto-only: cancel when agy runs a
+   * denied tool or leaves auto mode, whether a prompt is open or not.
+   */
+  private police(n: SessionNotification) {
+    const u = n.update as any;
+    if (u.sessionUpdate === "current_mode_update" && u.currentModeId !== MODE) {
+      log({ event: "mode_changed", to: u.currentModeId });
+      this.applied.delete("mode");
+      void this.setOption(n.sessionId, "mode", MODE).catch(() => {});
+      this.ctx?.ui.notify(`Antigravity left ${MODE} mode (${u.currentModeId}); Pi switched it back.`, "warning");
+      return;
+    }
+    if (u.sessionUpdate !== "tool_call" && u.sessionUpdate !== "tool_call_update") return;
+    const tool = deniedTool(u);
+    if (!tool) return;
+    this.violation = tool;
+    log({ event: "denied_tool_ran", tool });
+    this.agy?.cancel(n.sessionId);
+    this.ctx?.ui.notify(`Antigravity tried ${tool}. Subagents and swarms are off; the turn was cancelled.`, "warning");
+  }
+
   // ---- agent → client requests ----
 
   private async permission(r: PermissionRequest): Promise<PermissionResponse> {
     const ctx = this.ctx;
+    // Layer 2 of the subagent deny.
+    if (deniedTool(r.toolCall ?? {})) {
+      log({ event: "permission_denied_tool" });
+      const reject = r.options?.find((o) => o.kind === "reject_always") ?? r.options?.find((o) => o.kind === "reject_once");
+      return reject ? { outcome: { outcome: "selected", optionId: reject.optionId } } : { outcome: { outcome: "cancelled" } };
+    }
     if (!ctx?.hasUI || !r.options?.length) {
       const reject = r.options?.find((o) => o.kind === "reject_once");
       return reject ? { outcome: { outcome: "selected", optionId: reject.optionId } } : { outcome: { outcome: "cancelled" } };

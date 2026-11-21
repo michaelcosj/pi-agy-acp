@@ -3,10 +3,9 @@ import { isHumanInput } from "./gate.ts";
 import { log, LOG_PATH } from "./log.ts";
 import { PROVIDER_ID } from "./models.ts";
 import { createAntigravityProvider } from "./provider.ts";
-import { type Binding, MODE_ENTRY, Runtime, SESSION_ENTRY, STEER_PREFIX } from "./runtime.ts";
-import { startBridge } from "./bridge.ts";
-
-const MODES = ["default", "accept-edits", "auto", "plan"] as const;
+import { deniedCommand, guardPaths, guardStatus, installGuard } from "./guard.ts";
+import { startMcpServer } from "./mcp.ts";
+import { type Binding, MODE, Runtime, SESSION_ENTRY, STEER_PREFIX } from "./runtime.ts";
 
 export default function antigravityExtension(pi: ExtensionAPI): void {
   const runtime = new Runtime();
@@ -19,21 +18,33 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
     runtime.ctx = ctx as any;
     runtime.gate.clear();
     let binding: Binding | undefined;
-    let mode: string | undefined;
     for (const e of ctx.sessionManager.getBranch()) {
-      if (e.type !== "custom") continue;
-      if (e.customType === SESSION_ENTRY) binding = e.data as Binding;
-      if (e.customType === MODE_ENTRY) mode = (e.data as { mode?: string })?.mode;
+      if (e.type === "custom" && e.customType === SESSION_ENTRY) binding = e.data as Binding;
     }
     if (binding?.sessionId !== runtime.binding?.sessionId) runtime.unbind();
     runtime.binding = binding ? { ...binding } : undefined;
-    runtime.mode = mode;
+  }
+
+  // The subagent/swarm deny hook and the allow rule for Pi's agent tool live
+  // in agy's own config. Install or repair them before agy starts.
+  const paths = guardPaths();
+  function ensureGuard(ctx?: ExtensionContext) {
+    try {
+      const changed = installGuard(paths);
+      if (changed.length) ctx?.ui.notify(`pi-antigravity updated agy config:\n${changed.join("\n")}`, "info");
+    } catch (e) {
+      ctx?.ui.notify(`pi-antigravity could not install its agy hook: ${(e as Error).message}`, "error");
+    }
   }
 
   pi.on("session_start", async (_e, ctx) => {
     restore(ctx);
-    // Bridge for Pi child agents, started from agy's terminal (bin/pi-agent).
-    runtime.extraEnv = await startBridge(pi, () => runtime.ctx).catch(() => ({}));
+    ensureGuard(ctx);
+    // Pi's agent tool for agy, over an in-process MCP server. Not in a child pi.
+    if (!process.env.PI_BRIDGE_PARENT && process.env.PI_ANTIGRAVITY_AGENT_TOOL !== "0") {
+      const mcp = await startMcpServer(pi as any).catch(() => undefined);
+      if (mcp) runtime.mcpServers = () => [mcp.acpEntry()];
+    }
   });
   pi.on("session_tree", (_e, ctx) => restore(ctx));
   pi.on("session_shutdown", (e) => {
@@ -122,9 +133,13 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
         if (probe) runtime.catalog = probe.catalog;
         const lines = [
           `agy ${agy.version ?? "?"}: ${probe ? "signed in" : "NOT signed in (run agy)"}${runtime.tier ? ` · ${runtime.tier}` : ""}`,
-          `Session: ${runtime.binding?.sessionId ?? "none yet"} · mode: ${runtime.mode ?? "default"}`,
+          `Session: ${runtime.binding?.sessionId ?? "none yet"} · mode: ${MODE} (fixed)`,
           `Models: ${runtime.catalog.map((e) => e.id).join(", ") || "?"}`,
-          `Bridge: ${runtime.extraEnv.PI_AG_BRIDGE ? "on (pi-agent)" : "off"}`,
+          `Agent tool (MCP): ${runtime.mcpServers().length ? "on" : "off"}`,
+          (() => {
+            const g = guardStatus(paths);
+            return `Subagent/swarm deny hook: ${g.hook && g.script ? "installed" : "MISSING"} · ${g.mcpAllow ? "mcp(pi/*) allowed" : "mcp(pi/*) NOT allowed"}`;
+          })(),
           process.env.PI_ANTIGRAVITY_LOG === "1" ? `Log: ${LOG_PATH}` : "Log: off (PI_ANTIGRAVITY_LOG=1)",
         ];
         ctx.ui.notify(lines.join("\n"), probe ? "info" : "error");
@@ -134,26 +149,11 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
     },
   });
 
-  pi.registerCommand("antigravity-mode", {
-    description: "Set the Antigravity permission mode: default | accept-edits | auto | plan",
-    getArgumentCompletions: (prefix) => MODES.filter((m) => m.startsWith(prefix)).map((m) => ({ value: m, label: m })),
-    handler: async (args, ctx) => {
-      runtime.ctx = ctx as any;
-      const mode = args.trim() || (await ctx.ui.select("Antigravity mode", [...MODES]));
-      if (!mode) return;
-      if (!(MODES as readonly string[]).includes(mode)) return ctx.ui.notify(`Unknown mode ${mode}. Use: ${MODES.join(", ")}`, "error");
-      runtime.mode = mode;
-      pi.appendEntry(MODE_ENTRY, { mode });
-      if (runtime.binding && runtime.process) await runtime.setOption(runtime.binding.sessionId, "mode", mode).catch(() => {});
-      ctx.ui.notify(`Antigravity mode: ${mode}`, "info");
-    },
-  });
-
   pi.registerCommand("agy", {
     description: "Run an Antigravity slash command, for example /agy goal <objective>",
     getArgumentCompletions: (prefix) =>
       runtime.commands
-        .filter((c) => c.name.startsWith(prefix))
+        .filter((c) => c.name.startsWith(prefix) && !deniedCommand(`/${c.name}`))
         .map((c) => ({ value: c.name, label: c.name, description: c.description })),
     handler: async (args, ctx) => {
       runtime.ctx = ctx as any;
@@ -163,6 +163,8 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
         return ctx.ui.notify(list || "No Antigravity commands yet. Send a message first.", "info");
       }
       if (!usingAntigravity(ctx)) return ctx.ui.notify("Select an antigravity/... model first.", "error");
+      const denied = deniedCommand(`/${text}`);
+      if (denied) return ctx.ui.notify(`/${denied} is turned off in Pi (subagents and swarms are denied).`, "error");
       // You typed this command: arm the gate and send it as a user message.
       runtime.gate.arm(`/${text}`);
       pi.sendUserMessage(`/${text}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
