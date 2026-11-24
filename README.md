@@ -66,8 +66,6 @@ The quota is the one difference. Pi runs agy's own CLI command, which you can al
 
 T3 Code also does things that Pi does not do: its own sign-in flow, a `zed` client name for old agy versions, a download and update of agy, and extra agy prompts in hidden sessions (for example, for commit messages).
 
-This comparison does not make either client safe. Google's terms still apply, and T3 Code users were suspended too.
-
 ## Settings
 
 | Variable | Default | Meaning |
