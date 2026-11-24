@@ -15,10 +15,12 @@ import { log } from "./log.ts";
 import { agyLevelFor, FALLBACK_CATALOG } from "./models.ts";
 import type { Runtime } from "./runtime.ts";
 import { GAP, stopReason, Translator, usageFrom } from "./translate.ts";
+import type { PendingCall } from "./mcp.ts";
+import { piToolsFrom, resultText, runningText } from "./tools.ts";
 
 export const LOGIN_HINT = "Antigravity is not signed in. Run `agy` once in a terminal and sign in with Google, then try again.";
 
-type Msg = { role: string; content: any; timestamp?: number; customType?: string };
+type Msg = { role: string; content: any; timestamp?: number; customType?: string; toolName?: string; isError?: boolean };
 
 function emptyUsage(): AssistantMessage["usage"] {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -38,6 +40,14 @@ export function promptBlocks(messages: Msg | Msg[], prefix?: string): PromptBloc
   const blocks: PromptBlock[] = [];
   if (prefix) blocks.push({ type: "text", text: prefix });
   for (const message of Array.isArray(messages) ? messages : [messages]) {
+    // The result of a Pi tool that agy called in its last turn.
+    if (message.role === "toolResult") {
+      blocks.push({ type: "text", text: resultText(message.toolName ?? "tool", !!message.isError, textOf(message.content).trim() || "(no output)") });
+      for (const c of Array.isArray(message.content) ? message.content : []) {
+        if (c.type === "image") blocks.push({ type: "image", data: c.data, mimeType: c.mimeType });
+      }
+      continue;
+    }
     if (typeof message.content === "string") blocks.push({ type: "text", text: message.content });
     else
       for (const c of message.content ?? []) {
@@ -62,7 +72,7 @@ export function historyText(messages: Msg[]): string {
   return `<earlier_conversation note="Shown in Pi before this Antigravity session started. Context only.">\n${lines.join("\n\n")}\n</earlier_conversation>\n\n`;
 }
 
-export function streamAntigravity(runtime: Runtime, model: Model<any>, context: { messages: Msg[] }, options?: SimpleStreamOptions): AssistantMessageEventStream {
+export function streamAntigravity(runtime: Runtime, model: Model<any>, context: { messages: Msg[]; tools?: any[] }, options?: SimpleStreamOptions): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
   const output: AssistantMessage = {
     role: "assistant",
@@ -96,8 +106,11 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
         log({ event: "refused", reason: decision.refuse.slice(0, 60) });
         return fail(decision.refuse);
       }
-      const { indexes, human } = decision;
+      const { indexes, human, toolResults } = decision;
       const fresh = indexes.map((i) => messages[i]);
+
+      // Pi's tools that agy can call this turn.
+      runtime.mcp?.setTools(piToolsFrom(context as any));
 
       const cwd = runtime.ctx.cwd;
       const s = await runtime.session(cwd);
@@ -141,17 +154,48 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
       if (options?.signal?.aborted) abort();
       options?.signal?.addEventListener("abort", abort, { once: true });
 
-      log({ event: "prompt", model: model.id, level, history: unseen.length, prefix: !!prefix, human, messages: fresh.length });
-      runtime.gate.commit(fresh as any, human);
+      // agy called a Pi tool: end agy's turn now (session/cancel), so it makes
+      // no more model requests. Pi runs the tool after this model turn ends.
+      const calls: PendingCall[] = [];
+      if (runtime.mcp) {
+        runtime.mcp.onCall = (call) => {
+          calls.push(call);
+          if (calls.length === 1) {
+            log({ event: "pi_tool_call", tool: call.name });
+            s.agy.cancel(sid);
+          }
+        };
+      }
+
+      log({ event: "prompt", model: model.id, level, history: unseen.length, prefix: !!prefix, human, toolResults, messages: fresh.length });
+      runtime.gate.commit(fresh as any, human, toolResults);
       if (!human) runtime.ctx?.ui.setStatus("antigravity-auto", `agy: automatic turn ${runtime.gate.autoTurns}/${runtime.gate.budget}`);
       // The price lookup runs during the turn, so it does not delay the end.
       const registry = runtime.ctx?.modelRegistry;
       const price = runtime.prices.price(model.id, registry ? (p, id) => registry.find(p, id)?.cost as any : undefined).catch(() => undefined);
-      const result = await s.agy.prompt(sessionId, promptBlocks(fresh, prefix));
-      const cancelled = result.stopReason === "cancelled" || !!options?.signal?.aborted;
+      let result;
+      try {
+        result = await s.agy.prompt(sessionId, promptBlocks(fresh, prefix));
+      } finally {
+        if (runtime.mcp) runtime.mcp.onCall = undefined;
+      }
+      const userAbort = !!options?.signal?.aborted;
+      const toolUse = calls.length > 0 && !userAbort;
+      // agy stopped; now answer its open calls. The result comes in the next prompt.
+      for (const c of calls) c.answer(userAbort ? "cancelled" : runningText(c.name), userAbort);
+      const cancelled = !toolUse && (result.stopReason === "cancelled" || userAbort);
       translator.finish(cancelled);
+      if (toolUse) {
+        for (const c of calls) {
+          const block = { type: "toolCall" as const, id: c.id, name: c.name, arguments: c.args as any };
+          output.content.push(block);
+          const contentIndex = output.content.length - 1;
+          stream.push({ type: "toolcall_start", contentIndex, partial: output });
+          stream.push({ type: "toolcall_end", contentIndex, toolCall: block, partial: output });
+        }
+      }
       runtime.markSeen();
-      output.stopReason = cancelled ? "aborted" : stopReason(result.stopReason);
+      output.stopReason = toolUse ? "toolUse" : cancelled ? "aborted" : stopReason(result.stopReason);
       output.rawStopReason = result.stopReason;
       const usage = usageFrom(result.usage ?? (result._meta as any)?.usage);
       if (usage) {
@@ -165,7 +209,7 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
       if (runtime.checkBan(translator.text)) return fail(BANNED);
       if (output.stopReason === "aborted") return fail("Cancelled", "aborted");
       if (output.stopReason === "error") return fail(`Antigravity refused the request (${result.stopReason}).`);
-      stream.push({ type: "done", reason: output.stopReason as "stop" | "length", message: output });
+      stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
       stream.end();
     } catch (e) {
       const raw = (e as Error).message;

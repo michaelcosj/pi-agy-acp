@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkCall } from "../src/mcp.ts";
-import { isPiAgentTool, isSubagentTool, updateAgyConfig } from "../src/agy-config.ts";
+import { isPiTool, isSubagentTool, updateAgyConfig } from "../src/agy-config.ts";
 import { readSubagents, readTranscript, transcriptLines } from "../src/subagents.ts";
 import { rosterRows, rowNames } from "../src/subagent-view.ts";
 import { isBanNotice } from "../src/ban.ts";
@@ -21,7 +20,7 @@ test("gate: typed text is human and refills the budget", () => {
   const g = new TurnGate(Date.now, 2);
   g.arm("fix the bug");
   const d = g.decide([userAt("old", 1), asst(), userAt("fix the bug", 2)]);
-  assert.deepEqual(d, { indexes: [2], human: true });
+  assert.deepEqual(d, { indexes: [2], human: true, toolResults: false });
 });
 
 test("gate: a child result is automatic and uses the budget", () => {
@@ -39,7 +38,7 @@ test("gate: a child result is automatic and uses the budget", () => {
   g.arm("continue");
   msgs.push(userAt("continue", 21));
   const d = g.decide(msgs) as any;
-  assert.deepEqual(d, { indexes: [msgs.length - 2, msgs.length - 1], human: true });
+  assert.deepEqual(d, { indexes: [msgs.length - 2, msgs.length - 1], human: true, toolResults: false });
   g.commit([], true);
   assert.equal(g.autoTurns, 0);
 });
@@ -103,20 +102,6 @@ test("stop reasons and usage", () => {
   assert.equal(usageFrom({}), undefined);
 });
 
-test("agent tool policy", () => {
-  const s = new Set<string>();
-  assert.match(checkCall({ action: "start", name: "a", model: "antigravity/gemini-4-neon", task: "x" }, s)!, /may not run on antigravity/);
-  assert.match(checkCall({ action: "start", name: "a", task: "x" }, s)!, /needs model/);
-  assert.match(checkCall({ action: "status" }, s, true)!, /disabled/);
-  assert.match(checkCall({ action: "start", name: "a", task: "x", host: "h" }, s)!, /remote hosts/);
-  assert.equal(checkCall({ action: "start", name: "a", model: "claude-code/claude-opus-5-5", task: "x" }, s), undefined);
-  assert.match(checkCall({ action: "send", name: "other", text: "x" }, s)!, /no child other/);
-  s.add("a");
-  assert.equal(checkCall({ action: "wait", name: "a" }, s), undefined);
-  assert.equal(checkCall({ action: "wait" }, s), undefined);
-  assert.match(checkCall({ action: "hosts" }, s)!, /unknown action/);
-});
-
 test("launch from env", () => {
   assert.deepEqual(launchFromEnv({}), { command: "agy", args: ["acp"], env: {} });
   assert.deepEqual(launchFromEnv({ PI_ANTIGRAVITY_COMMAND: "/x/agy_acp_server" }).args, []);
@@ -140,11 +125,31 @@ test("subagent tool calls are recognized", () => {
   assert.ok(!isSubagentTool({ title: "Run npm test" }));
 });
 
-test("Pi's agent tool title", () => {
-  assert.ok(isPiAgentTool({ title: "Run mcp_pi_agent" }));
-  assert.ok(isPiAgentTool({ title: "Running mcp_pi_agent" }));
-  assert.ok(!isPiAgentTool({ title: "Run mcp_other_agent" }));
-  assert.ok(!isPiAgentTool({ title: "Run mcp_pi_agent_x" }));
+test("Pi tool titles", () => {
+  assert.ok(isPiTool({ title: "Run mcp_pi_agent" }));
+  assert.ok(isPiTool({ title: "Running mcp_pi_questionnaire" }));
+  assert.ok(!isPiTool({ title: "Run mcp_other_agent" }));
+  assert.ok(!isPiTool({ title: "Run npm test" }));
+});
+
+test("Pi tools for agy: no default tools, no codemode, plain schemas", async () => {
+  const { piToolsFrom, inputSchema, excludedTools } = await import("../src/tools.ts");
+  const tools = [
+    { name: "read", description: "r", parameters: { type: "object" } },
+    { name: "codemode", description: "c", parameters: { type: "object" } },
+    { name: "questionnaire", description: "Ask", parameters: { type: "object", properties: { q: { type: ["string", "null"] } } } },
+    { name: "bad name", description: "x", parameters: {} },
+    { name: "web_search", description: "Search", parameters: { type: "string" } },
+  ];
+  const out = piToolsFrom({ tools });
+  assert.deepEqual(out.map((t) => t.name), ["questionnaire", "web_search"]);
+  assert.deepEqual(out[0].inputSchema, { type: "object", properties: { q: { type: "string" } } });
+  assert.deepEqual(out[1].inputSchema, { type: "object", properties: {} });
+  assert.deepEqual(inputSchema(undefined), { type: "object", properties: {} });
+  assert.ok(excludedTools({ PI_ANTIGRAVITY_EXCLUDE_TOOLS: "web_search, x" }).has("web_search"));
+  // tools from Pi's transcript system messages
+  const msgs = [{ role: "system", content: "p", toolsAdded: tools.slice(2, 3), timestamp: 1 }];
+  assert.deepEqual(piToolsFrom({ messages: msgs as any }).map((t) => t.name), ["questionnaire"]);
 });
 
 test("updateAgyConfig removes the old allow rule and hook, keeping the rest", async () => {

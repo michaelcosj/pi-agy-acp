@@ -7,6 +7,7 @@
 //   anything else → echoes the prompt text
 // FAKE_AGY_AUTH=0 makes session/new fail with -32000.
 import readline from "node:readline";
+import { spawn } from "node:child_process";
 
 const rl = readline.createInterface({ input: process.stdin });
 const send = (m) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...m })}\n`);
@@ -15,6 +16,43 @@ let nextId = 1000;
 const waiting = new Map();
 const cancelled = new Set();
 const dirs = new Map();
+const mcpEntries = new Map();
+let lastMcpAnswer = "(none)";
+let pendingAnswer = Promise.resolve();
+
+/** Starts the stdio MCP server from a session's mcpServers (as agy does) and returns an rpc function. */
+function mcpClient(sid) {
+  const e = mcpEntries.get(sid)?.[0];
+  if (!e) return undefined;
+  const env = { ...process.env };
+  for (const v of e.env ?? []) env[v.name] = v.value;
+  const child = spawn(e.command, e.args ?? [], { env, stdio: ["pipe", "pipe", "ignore"] });
+  let buf = "";
+  let id = 0;
+  const wait = new Map();
+  child.stdout.on("data", (d) => {
+    buf += d;
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      try {
+        const msg = JSON.parse(line);
+        if (msg.id !== undefined && wait.has(msg.id)) {
+          wait.get(msg.id)(msg);
+          wait.delete(msg.id);
+        }
+      } catch {}
+    }
+  });
+  const rpc = (method, params) =>
+    new Promise((res) => {
+      const n = ++id;
+      wait.set(n, res);
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: n, method, params })}\n`);
+    });
+  return { rpc, close: () => child.kill() };
+}
 const sessions = new Set();
 const request = (method, params) =>
   new Promise((resolve) => {
@@ -50,11 +88,13 @@ rl.on("line", async (line) => {
       sessions.add(id);
       process.stderr.write(`new ${JSON.stringify(p._meta ?? null)}\n`);
       dirs.set(id, p.additionalDirectories ?? []);
+      mcpEntries.set(id, p.mcpServers ?? []);
       return send({ id: m.id, result: sessionResult(id) });
     }
     case "session/resume":
       if (!sessions.has(p.sessionId)) return send({ id: m.id, error: { code: -32602, message: "unknown session" } });
       dirs.set(p.sessionId, p.additionalDirectories ?? []);
+      mcpEntries.set(p.sessionId, p.mcpServers ?? []);
       return send({ id: m.id, result: {} });
     case "session/close":
       return send({ id: m.id, result: {} });
@@ -75,7 +115,7 @@ rl.on("line", async (line) => {
         update(sid, { sessionUpdate: "session_info_update", title: "Greeting" });
         return send({ id: m.id, result: { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } } });
       }
-      if (/\btool\b/.test(text)) {
+      if (/\btool\b/.test(text) && !/pi-tool|Result of /.test(text)) {
         update(sid, { sessionUpdate: "tool_call", toolCallId: "t1", title: "Run npm test", kind: "execute", status: "pending", rawInput: { command: "npm test" } });
         const r = await request("session/request_permission", {
           sessionId: sid,
@@ -100,6 +140,35 @@ rl.on("line", async (line) => {
       }
       if (/^banned$/.test(text.trim())) {
         update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[warning] This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product." } });
+        return send({ id: m.id, result: { stopReason: "end_turn" } });
+      }
+      // "pi-tools" → lists Pi's MCP tools. "pi-tool <name>" → calls it, waits for session/cancel.
+      if (/^pi-tools$/.test(text.trim())) {
+        const c = mcpClient(sid);
+        await c.rpc("initialize", { protocolVersion: "2025-06-18" });
+        const list = await c.rpc("tools/list", {});
+        c.close();
+        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `tools ${list.result.tools.map((t) => t.name).join(",")}` } });
+        return send({ id: m.id, result: { stopReason: "end_turn" } });
+      }
+      const call = /^pi-tool (\S+)$/.exec(text.trim());
+      if (call) {
+        cancelled.delete(sid);
+        const c = mcpClient(sid);
+        await c.rpc("initialize", { protocolVersion: "2025-06-18" });
+        update(sid, { sessionUpdate: "tool_call", toolCallId: "pt", title: `Run mcp_pi_${call[1]}`, kind: "other", status: "in_progress" });
+        const answered = (pendingAnswer = c.rpc("tools/call", { name: call[1], arguments: { q: "pick one" } }).then((r) => {
+          lastMcpAnswer = r.result?.content?.[0]?.text ?? JSON.stringify(r.error);
+          c.close();
+        }));
+        for (let i = 0; i < 1000 && !cancelled.has(sid); i++) await new Promise((res) => setTimeout(res, 10));
+        send({ id: m.id, result: { stopReason: cancelled.has(sid) ? "cancelled" : "end_turn" } });
+        await answered;
+        return;
+      }
+      if (/^mcp-answer$/.test(text.trim()) || /Result of /.test(text)) {
+        await pendingAnswer;
+        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `answer ${lastMcpAnswer} | prompt ${text.replace(/\n/g, " ")}` } });
         return send({ id: m.id, result: { stopReason: "end_turn" } });
       }
       if (/^pi-agent$/.test(text.trim())) {

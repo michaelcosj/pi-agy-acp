@@ -33,6 +33,8 @@ function setup(opts: { select?: string; confirm?: boolean; hasUI?: boolean; auth
     },
   };
   runtime.ctx = ctx;
+  // Tests do not read the user's pi-agy-acp.json: no sandbox.
+  runtime.sandbox = { mode: "off", readOnly: [], readWrite: [] };
   live.push(runtime);
   runtime.pi = {
     sendMessage: (m) => calls.sent.push(m),
@@ -221,7 +223,7 @@ test("an agy subagent call runs and starts the subagent watch", async () => {
   runtime.stop();
 });
 
-test("Pi's own agent tool is approved without a dialog", async () => {
+test("Pi's MCP tools are approved without a dialog", async () => {
   const { runtime, calls } = setup({ select: "Deny" });
   runtime.gate.arm("pi-agent");
   const { result } = await run(runtime, [user("pi-agent")]);
@@ -304,4 +306,44 @@ test("/compact: agy's summary comes back as text", async () => {
   assert.doesNotMatch(summary, /Compacting\.|<summary>/);
   assert.match(compactSummary(""), /agy printed no summary/);
   runtime.stop();
+});
+
+test("a Pi tool call: agy's turn is cancelled and Pi's turn ends with the call", async () => {
+  const { startMcpServer } = await import("../src/mcp.ts");
+  const mcp = await startMcpServer();
+  const { runtime } = setup();
+  runtime.mcp = mcp;
+  runtime.mcpServers = () => [mcp.acpEntry()];
+  const tools = [{ name: "questionnaire", description: "Ask the user", parameters: { type: "object", properties: { q: { type: "string" } } } }];
+  const go = async (messages: any[]) => {
+    const s = streamAntigravity(runtime, model, { messages, tools } as any, {});
+    const events: any[] = [];
+    for await (const e of s) events.push(e);
+    return { events, result: await s.result() };
+  };
+  runtime.gate.arm("pi-tools");
+  const listed = await go([user("pi-tools")]);
+  assert.match(listed.result.content.map((b: any) => b.text ?? "").join(""), /tools questionnaire/);
+
+  runtime.gate.arm("pi-tool questionnaire");
+  const one = await go([user("pi-tools"), listed.result, user("pi-tool questionnaire")]);
+  assert.equal(one.result.stopReason, "toolUse");
+  const call = one.result.content.find((b: any) => b.type === "toolCall") as any;
+  assert.equal(call.name, "questionnaire");
+  assert.deepEqual(call.arguments, { q: "pick one" });
+  assert.ok(call.id.startsWith("agy_"));
+  assert.ok(one.events.some((e) => e.type === "toolcall_end"));
+  // agy's own line for the Pi tool is hidden (Pi shows the call).
+  assert.doesNotMatch(one.result.content.map((b: any) => b.text ?? "").join(""), /mcp_pi_questionnaire/);
+
+  // Pi ran the tool; its result goes to agy as the next prompt, not as an automatic turn.
+  const before = runtime.gate.autoTurns;
+  const toolResult = { role: "toolResult", toolCallId: call.id, toolName: "questionnaire", content: [{ type: "text", text: "B" }], isError: false, timestamp: Date.now() };
+  const two = await go([user("pi-tools"), listed.result, user("pi-tool questionnaire"), one.result, toolResult]);
+  const text = two.result.content.map((b: any) => b.text ?? "").join("");
+  assert.match(text, /answer Running questionnaire; result arrives in next message\./);
+  assert.match(text, /prompt Result of questionnaire: B/);
+  assert.equal(runtime.gate.autoTurns, before);
+  runtime.stop();
+  mcp.close();
 });

@@ -1,67 +1,32 @@
 // In-process MCP server (streamable HTTP on 127.0.0.1) that gives agy Pi's
-// `agent` tool, the same way T3 Code gives agy its orchestrator tools. agy
-// starts bin/mcp-bridge.mjs (a stdio MCP server from `session/new.mcpServers`),
-// which forwards to this server, as T3's `acp-mcp-bridge` does. Calls go to agent-bridge
-// over the Pi event bus ("agent-bridge:call"). A child's result posts to the
-// Pi session when it settles, which starts an Antigravity turn (within the
-// gate's budget of turns that you did not type).
+// tools. agy starts bin/mcp-bridge.mjs (a stdio MCP server from
+// `session/new.mcpServers`), which forwards to this server, as T3 Code's
+// `acp-mcp-bridge` does.
+//
+// A tool call does not run here. The server records it and keeps the MCP
+// request open; the runtime then cancels agy's turn (session/cancel) and ends
+// Pi's model turn with the same call, so Pi runs the tool itself (its UI,
+// hooks, and permission checks). The result goes to agy in the next prompt.
+// The open MCP request gets "Running <tool>; result arrives in next message."
+// after the cancel, so agy makes no more model requests in that turn.
 import crypto from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { log } from "./log.ts";
+import type { PiToolDef } from "./tools.ts";
 
 const PROTOCOL = "2025-06-18";
-const MAX_CHILDREN = Number(process.env.PI_AG_MAX_CHILDREN) || 6;
-const ACTIONS = ["start", "send", "wait", "status", "stop"] as const;
-/** agy's MCP calls time out; long waits return early and Gemini calls wait again. */
-const MAX_WAIT_S = Number(process.env.PI_AG_MAX_WAIT_S) || 240;
-
-type Events = { emit(name: string, data: unknown): void };
 
 /** The stdio MCP bridge that agy starts. */
 export const BRIDGE = fileURLToPath(new URL("../bin/mcp-bridge.mjs", import.meta.url));
 
-export const AGENT_TOOL = {
-  name: "agent",
-  description:
-    "Delegate work to Pi child agents: interactive Pi sessions in Rex panes that the user can watch and steer, on a non-Antigravity model " +
-    "(for example claude-code/claude-opus-5-5; antigravity/* is refused). start returns at once. When a child settles, its final reply " +
-    "arrives as a new message, so you can end your turn while children run. wait blocks until a child settles and returns its reply " +
-    `(max ${MAX_WAIT_S} s per call); use it only for short tasks whose result you need in this turn.`,
-  inputSchema: {
-    type: "object",
-    properties: {
-      action: { type: "string", enum: [...ACTIONS], description: "start a child; send a message to a running child (a steer if busy); wait for a child to settle; status of one or all; stop (closes it)" },
-      name: { type: "string", description: "Agent name: lowercase letters, digits, - (e.g. tests-auth). wait: omit to wait for any" },
-      task: { type: "string", description: "start: the full task. The child does not see this conversation, so include everything it needs" },
-      title: { type: "string", description: "start: short title for the agent list" },
-      model: { type: "string", description: "start: provider/model, required, not antigravity/*; e.g. claude-code/claude-opus-5-5" },
-      thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh"], description: "start: thinking level" },
-      cwd: { type: "string", description: "start: working directory (default: the session's)" },
-      worktree: { type: ["boolean", "string"], description: "start: own git worktree on branch agent/<name> (true, or a name)" },
-      text: { type: "string", description: "send: the message" },
-      timeout: { type: "number", description: `wait: seconds, max ${MAX_WAIT_S} (default ${MAX_WAIT_S})` },
-    },
-    required: ["action"],
-  },
-} as const;
-
-/** Rejects calls that the limits do not allow. Returns an error message, or undefined. */
-export function checkCall(params: Record<string, unknown>, started: Set<string>, banned = false): string | undefined {
-  if (banned) return "Antigravity is disabled on this account; the agent tool is off";
-  const action = String(params.action ?? "");
-  if (!(ACTIONS as readonly string[]).includes(action)) return `unknown action ${action || "(none)"}; use ${ACTIONS.join(", ")}`;
-  if (action === "start") {
-    if (params.host) return "remote hosts are not supported here";
-    if (typeof params.model !== "string" || !params.model.includes("/")) return "start needs model (provider/model, for example claude-code/claude-opus-5-5)";
-    if (params.model.startsWith("antigravity/")) return "children may not run on antigravity/* models; use another provider";
-    if (started.size >= MAX_CHILDREN) return `at most ${MAX_CHILDREN} children at once; stop one first`;
-  }
-  if ((action === "send" || action === "stop") && (typeof params.name !== "string" || !started.has(params.name)))
-    return `no child ${String(params.name ?? "")} started from this session`;
-  if (action === "wait" && typeof params.name === "string" && !started.has(params.name)) return `no child ${params.name} started from this session`;
-  return undefined;
+export interface PendingCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  /** Answers agy's MCP request. */
+  answer(text: string, isError?: boolean): void;
 }
 
 export interface McpServerHandle {
@@ -69,61 +34,43 @@ export interface McpServerHandle {
   token: string;
   /** The `mcpServers` entry for ACP session/new and session/resume: a stdio bridge to this server. */
   acpEntry(): { name: string; command: string; args: string[]; env: { name: string; value: string }[] };
-  /** Stops every child started from this session. */
-  stopAll(): void;
+  /** Sets the tools that agy sees. Sends tools/list_changed when they change. */
+  setTools(tools: PiToolDef[]): void;
+  /** Called for each tool call from agy. */
+  onCall: ((call: PendingCall) => void) | undefined;
   /** After a ban: refuse all calls. */
   banned: boolean;
   close(): void;
 }
 
-type Shared = McpServerHandle & { started: Set<string>; events: Events };
+type Shared = McpServerHandle;
 const g = globalThis as { __piAgMcp?: Shared };
 
-/** One server per process, kept across reloads and session changes. Each call
- *  gives it the newest event bus: an old `pi` is stale after a reload or a
- *  session change, and a call on it throws. */
-export async function startMcpServer(pi: { events?: Events }): Promise<McpServerHandle | undefined> {
-  if (!pi.events) return undefined;
-  if (g.__piAgMcp) {
-    g.__piAgMcp.events = pi.events;
-    return g.__piAgMcp;
-  }
+/** One server per process, kept across reloads and session changes. */
+export async function startMcpServer(): Promise<McpServerHandle> {
+  if (g.__piAgMcp) return g.__piAgMcp;
   const token = crypto.randomBytes(24).toString("hex");
-  const started = new Set<string>();
-
-  const callBridge = (params: Record<string, unknown>, signal: AbortSignal) =>
-    new Promise<{ text?: string; error?: string }>((resolve) => {
-      let accepted = false;
-      let done = false;
-      const reply = (r: { text?: string; error?: string }) => {
-        if (done) return;
-        done = true;
-        resolve(r);
-      };
-      // notify: the child's result posts to this Pi session when it settles.
-      try {
-        handle_.events.emit("agent-bridge:call", { params, signal, reply, notify: true, accept: () => (accepted = true) });
-      } catch (e) {
-        log({ event: "bridge_emit_failed" });
-        return reply({ error: `Pi could not reach agent-bridge: ${(e as Error).message.split("\n")[0]}` });
-      }
-      if (!accepted) reply({ error: "agent-bridge is not loaded in this Pi (it needs Rex)" });
-    });
+  let tools: PiToolDef[] = [];
+  let toolsKey = "[]";
+  /** Open GET streams for server-to-client notifications (tools/list_changed). */
+  const streams = new Set<http.ServerResponse>();
 
   async function callTool(name: string, args: Record<string, unknown>, signal: AbortSignal) {
-    if (name !== AGENT_TOOL.name) return { isError: true, content: [{ type: "text", text: `unknown tool ${name}` }] };
-    const params = { ...args };
-    if (params.action === "wait") params.timeout = Math.min(Math.max(1, Number(params.timeout) || MAX_WAIT_S), MAX_WAIT_S);
-    const denied = checkCall(params, started, handle_.banned);
-    if (denied) {
-      log({ event: "mcp_denied", action: params.action });
-      return { isError: true, content: [{ type: "text", text: denied }] };
-    }
-    log({ event: "mcp_call", action: params.action });
-    const r = await callBridge(params, signal);
-    if (!r.error && params.action === "start" && typeof params.name === "string") started.add(params.name);
-    if (!r.error && params.action === "stop" && typeof params.name === "string") started.delete(params.name);
-    return r.error ? { isError: true, content: [{ type: "text", text: r.error }] } : { content: [{ type: "text", text: r.text ?? "" }] };
+    if (handle_.banned) return { isError: true, content: [{ type: "text", text: "Antigravity is disabled on this account; tools are off" }] };
+    if (!tools.some((t) => t.name === name)) return { isError: true, content: [{ type: "text", text: `unknown tool ${name}` }] };
+    const onCall = handle_.onCall;
+    if (!onCall) return { isError: true, content: [{ type: "text", text: "no Pi turn is open; try again" }] };
+    log({ event: "mcp_call", tool: name });
+    return new Promise<{ isError?: boolean; content: { type: "text"; text: string }[] }>((resolve) => {
+      let done = false;
+      const answer = (text: string, isError = false) => {
+        if (done) return;
+        done = true;
+        resolve({ ...(isError ? { isError: true } : {}), content: [{ type: "text", text }] });
+      };
+      signal.addEventListener("abort", () => answer("cancelled", true), { once: true });
+      onCall({ id: `agy_${crypto.randomBytes(6).toString("hex")}`, name, args, answer });
+    });
   }
 
   async function handle(msg: any, signal: AbortSignal): Promise<unknown | undefined> {
@@ -133,11 +80,11 @@ export async function startMcpServer(pi: { events?: Events }): Promise<McpServer
     const ok = (result: unknown) => ({ jsonrpc: "2.0", id, result });
     switch (msg.method) {
       case "initialize":
-        return ok({ protocolVersion: msg.params?.protocolVersion ?? PROTOCOL, capabilities: { tools: {} }, serverInfo: { name: "pi", version: "0.1.0" } });
+        return ok({ protocolVersion: msg.params?.protocolVersion ?? PROTOCOL, capabilities: { tools: { listChanged: true } }, serverInfo: { name: "pi", version: "0.2.0" } });
       case "ping":
         return ok({});
       case "tools/list":
-        return ok({ tools: [AGENT_TOOL] });
+        return ok({ tools });
       case "tools/call":
         return ok(await callTool(String(msg.params?.name ?? ""), msg.params?.arguments ?? {}, signal));
       default:
@@ -152,8 +99,16 @@ export async function startMcpServer(pi: { events?: Events }): Promise<McpServer
       res.writeHead(401).end();
       return;
     }
+    // A GET opens a stream for notifications (MCP streamable HTTP).
+    if (req.method === "GET") {
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+      res.flushHeaders();
+      streams.add(res);
+      res.on("close", () => streams.delete(res));
+      return;
+    }
     if (req.method !== "POST") {
-      res.writeHead(405, { allow: "POST" }).end();
+      res.writeHead(405, { allow: "GET, POST" }).end();
       return;
     }
     let body = "";
@@ -195,16 +150,18 @@ export async function startMcpServer(pi: { events?: Events }): Promise<McpServer
   server.unref();
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
   const handle_: Shared = {
-    events: pi.events,
     url,
     token,
-    started,
     banned: false,
-    stopAll: () => {
-      for (const name of [...started]) {
-        void callBridge({ action: "stop", name }, new AbortController().signal);
-        started.delete(name);
-      }
+    onCall: undefined,
+    setTools(next) {
+      const key = JSON.stringify(next);
+      if (key === toolsKey) return;
+      tools = next;
+      toolsKey = key;
+      log({ event: "mcp_tools", count: next.length });
+      const note = `data: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed" })}\n\n`;
+      for (const s of streams) s.write(note);
     },
     acpEntry: () => ({
       name: "pi",
@@ -216,6 +173,7 @@ export async function startMcpServer(pi: { events?: Events }): Promise<McpServer
       ],
     }),
     close: () => {
+      for (const s of streams) s.end();
       server.close();
       if (g.__piAgMcp === handle_) g.__piAgMcp = undefined;
     },

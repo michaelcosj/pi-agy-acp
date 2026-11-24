@@ -2,7 +2,8 @@
 // stdio MCP server for agy: forwards each JSON-RPC line to Pi's local MCP
 // server over HTTP and writes the reply back. agy starts this program, as
 // T3 Code's agy sessions start `t3 acp-mcp-bridge`. Then `agy acp` needs no
-// --process-per-session flag for HTTP MCP.
+// --process-per-session flag for HTTP MCP. Notifications from Pi (for example
+// tools/list_changed) arrive on a GET event stream and go to agy as lines.
 // Env: PI_AG_MCP_URL (http://127.0.0.1:<port>/mcp), PI_AG_MCP_AUTH ("Bearer …").
 import readline from "node:readline";
 
@@ -32,6 +33,32 @@ async function forward(line) {
   }
 }
 
-readline.createInterface({ input: process.stdin }).on("line", (line) => {
-  if (line.trim()) void forward(line);
-});
+// Notifications from Pi (tools/list_changed) come on a GET event stream.
+async function listen() {
+  for (;;) {
+    try {
+      const res = await fetch(url, { headers: { accept: "text/event-stream", authorization: auth } });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      let buf = "";
+      for await (const chunk of res.body) {
+        buf += Buffer.from(chunk).toString("utf8");
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const event = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          const data = event.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("");
+          if (data) process.stdout.write(`${data}\n`);
+        }
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+readline
+  .createInterface({ input: process.stdin })
+  .on("line", (line) => {
+    if (line.trim()) void forward(line);
+  })
+  .on("close", () => process.exit(0));
+void listen();

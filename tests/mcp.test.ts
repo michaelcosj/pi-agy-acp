@@ -1,72 +1,49 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { test } from "node:test";
 import { startMcpServer } from "../src/mcp.ts";
 
-test("MCP server: auth, tools/list, tools/call through agent-bridge:call", async () => {
-  const calls: any[] = [];
-  const events = {
-    emit(name: string, d: any) {
-      if (name !== "agent-bridge:call") return;
-      d.accept();
-      calls.push({ ...d.params, notify: d.notify });
-      const p = d.params;
-      if (p.action === "start") d.reply({ text: `Started agent ${p.name}.` });
-      else if (p.action === "wait") setTimeout(() => d.reply({ text: `Agent ${p.name} finished:\nall green` }), 20);
-      else d.reply({ text: "ok" });
-    },
-  };
-  const mcp = (await startMcpServer({ events }))!;
-  const entry = mcp.acpEntry();
-  assert.equal(entry.name, "pi");
-  assert.equal(entry.command, process.execPath);
-  const auth0 = entry.env.find((e) => e.name === "PI_AG_MCP_AUTH")!.value;
-  const post = (body: unknown, auth = auth0) =>
-    fetch(mcp.url, { method: "POST", headers: { "content-type": "application/json", authorization: auth }, body: JSON.stringify(body) });
-  const rpc = async (method: string, params?: unknown) => (await (await post({ jsonrpc: "2.0", id: 1, method, params })).json()) as any;
+const TOOL = { name: "questionnaire", description: "Ask", inputSchema: { type: "object", properties: {} } };
 
-  assert.equal((await post({ jsonrpc: "2.0", id: 1, method: "tools/list" }, "Bearer nope")).status, 401);
-  assert.equal((await post({ jsonrpc: "2.0", method: "notifications/initialized" })).status, 202);
+async function post(mcp: { url: string; token: string }, body: unknown, auth = `Bearer ${mcp.token}`) {
+  return fetch(mcp.url, { method: "POST", headers: { "content-type": "application/json", authorization: auth }, body: JSON.stringify(body) });
+}
+
+test("MCP server: auth, tools/list, a call waits for its answer", async () => {
+  const mcp = await startMcpServer();
+  mcp.setTools([TOOL]);
+  assert.equal((await post(mcp, { jsonrpc: "2.0", id: 1, method: "tools/list" }, "Bearer nope")).status, 401);
+  assert.equal((await post(mcp, { jsonrpc: "2.0", method: "notifications/initialized" })).status, 202);
+  const rpc = async (method: string, params?: unknown) => (await (await post(mcp, { jsonrpc: "2.0", id: 1, method, params })).json()) as any;
 
   const init = await rpc("initialize", { protocolVersion: "2025-11-25" });
   assert.equal(init.result.protocolVersion, "2025-11-25");
-  const list = await rpc("tools/list");
-  assert.deepEqual(list.result.tools.map((t: any) => t.name), ["agent"]);
+  assert.equal(init.result.capabilities.tools.listChanged, true);
+  assert.deepEqual((await rpc("tools/list")).result.tools.map((t: any) => t.name), ["questionnaire"]);
 
-  const call = (args: unknown) => rpc("tools/call", { name: "agent", arguments: args });
-  const denied = await call({ action: "hosts" });
-  assert.equal(denied.result.isError, true);
-  assert.match(denied.result.content[0].text, /unknown action/);
+  // No open turn: the call fails at once.
+  assert.match((await rpc("tools/call", { name: "questionnaire", arguments: {} })).result.content[0].text, /no Pi turn/);
+  assert.match((await rpc("tools/call", { name: "nope", arguments: {} })).result.content[0].text, /unknown tool/);
 
-  const started = await call({ action: "start", name: "w", model: "claude-code/claude-opus-5-5", task: "run the tests" });
-  assert.equal(started.result.isError, undefined);
-  assert.match(started.result.content[0].text, /Started agent w/);
-  assert.equal(calls.at(-1).notify, true);
+  // An open turn: the call is recorded and waits for its answer.
+  const seen: any[] = [];
+  mcp.onCall = (c) => {
+    seen.push(c);
+    setTimeout(() => c.answer("Running questionnaire; result arrives in next message."), 20);
+  };
+  const r = await rpc("tools/call", { name: "questionnaire", arguments: { q: "x" } });
+  assert.equal(seen[0].name, "questionnaire");
+  assert.deepEqual(seen[0].args, { q: "x" });
+  assert.match(r.result.content[0].text, /^Running questionnaire;/);
 
-  const waited = await call({ action: "wait", name: "w", timeout: 99999 });
-  assert.match(waited.result.content[0].text, /all green/);
-  assert.equal(calls.at(-1).timeout, 240);
-
-  const unknown = await call({ action: "send", name: "nobody", text: "hi" });
-  assert.match(unknown.result.content[0].text, /no child nobody/);
+  mcp.banned = true;
+  assert.match((await rpc("tools/call", { name: "questionnaire", arguments: {} })).result.content[0].text, /disabled/);
   mcp.close();
 });
 
-test("MCP server: no agent-bridge gives a clear error", async () => {
-  const mcp = (await startMcpServer({ events: { emit() {} } }))!;
-  const r = await fetch(mcp.url, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${mcp.token}` },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agent", arguments: { action: "status" } } }),
-  });
-  const j = (await r.json()) as any;
-  assert.match(j.result.content[0].text, /agent-bridge is not loaded/);
-  mcp.close();
-});
-
-test("stdio bridge: agy's stdio MCP lines reach Pi's server", async () => {
-  const { spawn } = await import("node:child_process");
-  const events = { emit(name: string, d: any) { if (name === "agent-bridge:call") { d.accept(); d.reply({ text: "ok" }); } } };
-  const mcp = (await startMcpServer({ events }))!;
+test("stdio bridge: lines reach Pi's server, and tools/list_changed reaches agy", async () => {
+  const mcp = await startMcpServer();
+  mcp.setTools([TOOL]);
   const e = mcp.acpEntry();
   const child = spawn(e.command, e.args, { env: { ...process.env, ...Object.fromEntries(e.env.map((x) => [x.name, x.value])) } });
   const lines: any[] = [];
@@ -76,31 +53,19 @@ test("stdio bridge: agy's stdio MCP lines reach Pi's server", async () => {
     for (let i; (i = buf.indexOf("\n")) >= 0; buf = buf.slice(i + 1)) lines.push(JSON.parse(buf.slice(0, i)));
   });
   const send = (m: unknown) => child.stdin.write(`${JSON.stringify(m)}\n`);
-  send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
-  send({ jsonrpc: "2.0", method: "notifications/initialized" });
-  send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-  for (let i = 0; i < 100 && lines.length < 2; i++) await new Promise((r) => setTimeout(r, 20));
-  child.kill();
-  mcp.close();
-  assert.equal(lines.length, 2);
-  assert.equal(lines.find((l) => l.id === 1).result.serverInfo.name, "pi");
-  assert.deepEqual(lines.find((l) => l.id === 2).result.tools.map((t: any) => t.name), ["agent"]);
-});
-
-test("MCP server: a stale event bus gives an error, and the newest bus is used", async () => {
-  const stale = { emit() { throw new Error("This extension ctx is stale after session replacement or reload."); } };
-  const mcp = (await startMcpServer({ events: stale }))!;
-  const call = async () => {
-    const r = await fetch(mcp.url, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${mcp.token}` },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agent", arguments: { action: "status" } } }),
-    });
-    return ((await r.json()) as any).result.content[0].text as string;
+  const until = async (ok: () => boolean) => {
+    for (let i = 0; i < 150 && !ok(); i++) await new Promise((r) => setTimeout(r, 20));
   };
-  assert.match(await call(), /could not reach agent-bridge: This extension ctx is stale/);
-  const fresh = { emit(_n: string, d: any) { d.accept(); d.reply({ text: "fresh bus" }); } };
-  assert.equal(await startMcpServer({ events: fresh }), mcp);
-  assert.equal(await call(), "fresh bus");
+  send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  await until(() => lines.length >= 2);
+  assert.equal(lines.find((l) => l.id === 1).result.serverInfo.name, "pi");
+  assert.deepEqual(lines.find((l) => l.id === 2).result.tools.map((t: any) => t.name), ["questionnaire"]);
+  // Give the bridge time to open its event stream, then change the tools.
+  await new Promise((r) => setTimeout(r, 300));
+  mcp.setTools([TOOL, { ...TOOL, name: "web_search" }]);
+  await until(() => lines.some((l) => l.method === "notifications/tools/list_changed"));
+  assert.ok(lines.some((l) => l.method === "notifications/tools/list_changed"));
+  child.kill();
   mcp.close();
 });

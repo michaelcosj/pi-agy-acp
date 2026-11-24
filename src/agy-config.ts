@@ -68,10 +68,10 @@ export function updateAgyConfig(p: AgyPaths): string[] {
   return changed;
 }
 
-/** agy's ACP title for a call of Pi's MCP agent tool: "Run mcp_pi_agent". */
-const PI_AGENT_TITLE = /^Run(?:ning)? mcp_pi_agent\??$/;
-export function isPiAgentTool(t: { title?: string }): boolean {
-  return PI_AGENT_TITLE.test((t.title ?? "").trim());
+/** agy's ACP title for a call of a tool on Pi's MCP server: "Run mcp_pi_<tool>". */
+const PI_TOOL_TITLE = /^Run(?:ning)? mcp_pi_[A-Za-z0-9_-]+\??$/;
+export function isPiTool(t: { title?: string }): boolean {
+  return PI_TOOL_TITLE.test((t.title ?? "").trim());
 }
 
 const SUBAGENT_TITLE = /\b(invoke_subagent|start_subagent)\b/;

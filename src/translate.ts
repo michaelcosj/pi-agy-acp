@@ -1,6 +1,7 @@
 // ACP session/update → Pi assistant message events.
 import type { AssistantMessage, AssistantMessageEventStream, TextContent, ThinkingContent } from "@earendil-works/pi-ai";
 import type { SessionUpdate, ToolCallFields } from "./acp/types.ts";
+import { isPiTool } from "./agy-config.ts";
 
 type Block = TextContent | ThinkingContent;
 
@@ -76,6 +77,12 @@ export class Translator {
         const merged: ToolCallFields = { ...prev };
         for (const [k, v] of Object.entries(f)) if (v !== undefined && v !== null && k !== "sessionUpdate") (merged as any)[k] = v;
         this.tools.set(f.toolCallId, merged);
+        // A Pi tool: Pi shows the call and its result itself.
+        if (isPiTool(merged)) {
+          this.reported.add(merged.toolCallId);
+          this.sink.onToolStatus?.(this.running());
+          break;
+        }
         if ((merged.status === "completed" || merged.status === "failed") && !this.reported.has(merged.toolCallId)) {
           this.reported.add(merged.toolCallId);
           this.line(toolLine(merged));
@@ -103,7 +110,7 @@ export class Translator {
 
   running(): string[] {
     return [...this.tools.values()]
-      .filter((t) => t.status !== "completed" && t.status !== "failed")
+      .filter((t) => t.status !== "completed" && t.status !== "failed" && !isPiTool(t))
       .map((t) => t.title ?? t.kind ?? "tool");
   }
 

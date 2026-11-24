@@ -17,12 +17,9 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
   pi.registerProvider(createAntigravityProvider(runtime));
   let mcp: McpServerHandle | undefined;
 
-  // Google's suspension notice: stop the children and all automatic turns.
+  // Google's suspension notice: stop all automatic turns and Pi tool calls.
   runtime.onBan = () => {
-    if (mcp) {
-      mcp.banned = true;
-      mcp.stopAll();
-    }
+    if (mcp) mcp.banned = true;
     runtime.ctx?.ui.notify(BANNED, "error");
     runtime.ctx?.ui.setStatus("antigravity", "agy: DISABLED by Google (TOS_VIOLATION)");
   };
@@ -68,14 +65,30 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (_e, ctx) => {
     restore(ctx);
     ensureAgyConfig(ctx);
-    // Pi's agent tool for agy, over an in-process MCP server. Not in a child pi.
-    if (!process.env.PI_BRIDGE_PARENT && process.env.PI_ANTIGRAVITY_AGENT_TOOL !== "0") {
-      mcp = await startMcpServer(pi as any).catch(() => undefined);
+    // Pi's tools for agy, over an in-process MCP server.
+    if (process.env.PI_ANTIGRAVITY_PI_TOOLS !== "0" && process.env.PI_ANTIGRAVITY_AGENT_TOOL !== "0") {
+      mcp = await startMcpServer().catch(() => undefined);
       const m = mcp;
-      if (m) runtime.mcpServers = () => [m.acpEntry()];
+      runtime.mcp = m;
+      if (m) {
+        m.banned = runtime.banned;
+        runtime.mcpServers = () => [m.acpEntry()];
+      }
     }
   });
   pi.on("session_tree", (_e, ctx) => restore(ctx));
+
+  // Pi tool calls from agy (ids start with "agy_"): limits that agy must keep.
+  pi.on("tool_call", (event) => {
+    if (!event.toolCallId.startsWith("agy_")) return;
+    if (runtime.banned) return { block: true, reason: BANNED };
+    const input = (event.input ?? {}) as Record<string, unknown>;
+    if (event.toolName === "agent" && input.action === "start") {
+      const model = typeof input.model === "string" ? input.model : "";
+      if (!model.includes("/")) return { block: true, reason: "start needs model (provider/model, for example claude-code/claude-opus-5-5)" };
+      if (model.startsWith(`${PROVIDER_ID}/`)) return { block: true, reason: "children may not run on antigravity/* models; use another provider" };
+    }
+  });
   // Also on reload: Pi then loads a new copy of this extension, and this copy's
   // pi and ctx are stale. A call on them throws and ends Pi. The new copy
   // resumes the agy session from the session entries.
@@ -187,7 +200,7 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
           "Quota:",
           ...usage,
           `Models: ${runtime.catalog.map((e) => e.id).join(", ") || "?"}`,
-          `Agent tool (MCP): ${runtime.mcpServers().length ? "on" : "off"}`,
+          `Pi tools for agy (MCP): ${runtime.mcpServers().length ? "on" : "off"}`,
           `Turns that you did not type: ${runtime.gate.budget ? `${runtime.gate.autoTurns}/${runtime.gate.budget} since your last message` : "off"}`,
           `agy subagents: ${runtime.subagents.list.length ? runtime.subagents.list.map((x) => `${x.role} [${x.status}]`).join(", ") : "none"}`,
           process.env.PI_ANTIGRAVITY_LOG === "1" ? `Log: ${LOG_PATH}` : "Log: off (PI_ANTIGRAVITY_LOG=1)",

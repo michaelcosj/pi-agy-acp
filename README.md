@@ -25,10 +25,10 @@ Needs Node 22.19+, the `agy` CLI, and an interactive Pi session. Print and RPC m
 - **Workspace folders:** agy asks before it touches files outside its workspace. A child agent's folder (for example its worktree) joins the workspace at the next turn. For a file outside the workspace, the dialog also offers "Allow <repo> for this session" and "Always allow <parent folder>". `/antigravity-status` shows the extra folders.
 - **agy commands:** `/agy <command> [args]`, for example `/agy goal …`. `/compact` runs agy's own compaction, and Pi shows agy's summary as a collapsed compaction entry.
 - **Background work:** when agy continues by itself, Pi shows the result as a message.
-- **Pi child agents:** Gemini gets Pi's `agent` tool over a local MCP server. It can start, message, wait for, and stop Pi child agents on other providers. A child's result starts a new Gemini turn. Needs [agent-bridge](https://github.com/michaelcosj/dotfiles/tree/main/nix/config/pi/agent/extensions/agent-bridge) and Rex.
+- **Pi's tools:** Gemini gets Pi's other tools (from Pi itself and from your extensions, for example `questionnaire`, `web_search`, MCP tools, or an `agent` tool) over a local MCP server. Pi's file and shell tools (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) and `codemode` are not sent, because agy has its own tools and codemode would get around the sandbox. When agy calls a Pi tool, pi-agy-acp stops agy's turn (`session/cancel`), and Pi runs the tool as its own tool call, with its UI, hooks, and permission checks. The result goes to agy as the next prompt. A child agent that agy starts may not run on an `antigravity/*` model.
 - **agy subagents:** agy's own subagents show as read-only `agy-<role>` rows in the agent list. `/agy-subagents` lists them.
 - **Status:** `/antigravity-status` shows sign-in, tier, quota, session, automatic turns, and subagents.
-- **Suspension stop:** when Google's suspension notice arrives, all Antigravity turns and child agents stop.
+- **Suspension stop:** when Google's suspension notice arrives, all Antigravity turns and Pi tool calls from agy stop.
 
 ## Sandbox (Linux)
 
@@ -54,7 +54,7 @@ Pi starts `agy acp` and talks to it over the Agent Client Protocol, as Zed and T
 
 Each Pi session keeps one agy session. A branch, or a session that agy lost, starts a new agy session, and Pi asks whether to send the earlier messages.
 
-Turns that you did not type, such as a child's result, use a budget (2 per typed message). Pi children may not use `antigravity/*` models.
+Turns that you did not type, such as a child's result, use a budget (2 per typed message). The result of a Pi tool that agy called does not use the budget. Pi children may not use `antigravity/*` models.
 
 Pi's own tools, tool hooks, and system prompt do not apply to these models. agy reads `AGENTS.md`, `GEMINI.md`, and its own skills.
 
@@ -66,12 +66,12 @@ Pi's own tools, tool hooks, and system prompt do not apply to these models. agy 
 |---|---|
 | Starts `agy acp` (optionally inside a local bubblewrap sandbox, which does not change agy's network traffic) | Same, with its own profile flags |
 | `initialize`: can read files; no file writes, no terminal | Same capabilities |
-| `session/new` with the cwd, one MCP server (a stdio bridge to Pi's `agent` tool), and a short `systemPrompt.append` | Same: its `t3-code` MCP server and a system prompt append |
+| `session/new` with the cwd, one MCP server (a stdio bridge to Pi's tools), and a short `systemPrompt.append` | Same: its `t3-code` MCP server and a system prompt append |
 | `session/resume`, `session/close` | Same, and also `session/load`, `fork`, and `list` |
 | `additionalDirectories` on new and resume; a change restarts agy between turns | Same: tracked folders and worktrees, sent on new, resume, load, and fork |
 | `set_config_option`: `mode=auto`, `model`, `thought_level` at each turn | Same |
 | `session/prompt` with text, images, and files; a prompt during a turn as a steer | Same, also audio and PDF links |
-| `session/cancel` on Escape | Same, then `session/close` |
+| `session/cancel` on Escape, and when agy calls a Pi tool (Pi runs the tool, and the result is the next prompt) | Same on Escape, then `session/close`; its MCP tools answer in the same turn |
 | A scratch session in a temp folder to read the model list | Same (`t3-antigravity-setup-*`) |
 | Earlier Pi messages as text in a new session, after you confirm | Same "context handoff", with no question |
 | Approves its own MCP tool, shows a dialog for all else | Approves its own MCP tools; in full access, approves all |
@@ -92,9 +92,8 @@ T3 Code also does things that Pi does not do: its own sign-in flow, a `zed` clie
 | `PI_ANTIGRAVITY_COMMAND` | `agy` | The agy binary |
 | `PI_ANTIGRAVITY_ARGS` | `acp` | Arguments for the agy binary |
 | `PI_ANTIGRAVITY_AUTO_TURNS` | `2` | Turns that you did not type, per typed message (`0` turns them off) |
-| `PI_ANTIGRAVITY_AGENT_TOOL` | on | `0` turns off the `agent` tool |
-| `PI_AG_MAX_CHILDREN` | `6` | Most child agents at once |
-| `PI_AG_MAX_WAIT_S` | `240` | Longest `agent wait` per call |
+| `PI_ANTIGRAVITY_PI_TOOLS` | on | `0` gives agy none of Pi's tools |
+| `PI_ANTIGRAVITY_EXCLUDE_TOOLS` | none | More Pi tools that agy does not get, comma-separated (for example `agent,web_search`) |
 | `PI_ANTIGRAVITY_LOG` | off | `1` writes `/tmp/pi-antigravity-<pid>.jsonl` (no message text) |
 | `PI_ANTIGRAVITY_CONFIG` | `~/.pi/agent/pi-agy-acp.json` | File with the "always" folders (`additionalDirectories`) and the sandbox settings |
 | `PI_ANTIGRAVITY_SANDBOX` | `off` | `bwrap` runs agy in bubblewrap (see Sandbox) |

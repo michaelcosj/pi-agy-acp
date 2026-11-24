@@ -26,7 +26,7 @@ export const budgetUsed = (n: number) =>
 
 const norm = (s: string) => s.replace(/\s+/g, " ").trim();
 
-type Msg = { role: string; content?: unknown; timestamp?: number; stopReason?: string };
+type Msg = { role: string; content?: unknown; timestamp?: number; stopReason?: string; toolCallId?: string };
 
 export class TurnGate {
   private tokens: Token[] = [];
@@ -50,28 +50,36 @@ export class TurnGate {
    * agy already got. Returns their indexes and whether you typed one, or a
    * refusal.
    */
-  decide(messages: Msg[], skip: (m: Msg) => boolean = () => false): { indexes: number[]; human: boolean } | { refuse: string } {
+  decide(messages: Msg[], skip: (m: Msg) => boolean = () => false): { indexes: number[]; human: boolean; toolResults: boolean } | { refuse: string } {
     const indexes: number[] = [];
+    let toolResults = false;
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.role === "assistant") {
         if (m.stopReason === "error" || m.stopReason === "aborted") continue;
         break;
       }
+      // Results of Pi tools that agy called continue agy's work.
+      if (m.role === "toolResult" && !this.sent.has(keyOf(m))) {
+        indexes.unshift(i);
+        toolResults = true;
+        continue;
+      }
       if (m.role !== "user" || skip(m) || this.sent.has(keyOf(m))) continue;
       indexes.unshift(i);
     }
     if (!indexes.length) return { refuse: NOTHING_NEW };
-    const human = this.takeToken(indexes.map((i) => messages[i]));
-    if (!human && this.autoTurns >= this.budget) return { refuse: budgetUsed(this.autoTurns) };
-    return { indexes, human };
+    const human = this.takeToken(indexes.map((i) => messages[i]).filter((m) => m.role === "user"));
+    // A turn for tool results that agy asked for is not an automatic turn.
+    if (!human && !toolResults && this.autoTurns >= this.budget) return { refuse: budgetUsed(this.autoTurns) };
+    return { indexes, human, toolResults };
   }
 
   /** The turn reached agy: mark the messages sent and count the turn. */
-  commit(messages: Msg[], human: boolean) {
+  commit(messages: Msg[], human: boolean, toolResults = false) {
     for (const m of messages) this.sent.add(keyOf(m));
     if (this.sent.size > 500) this.sent = new Set([...this.sent].slice(-250));
-    this.autoTurns = human ? 0 : this.autoTurns + 1;
+    this.autoTurns = human ? 0 : toolResults ? this.autoTurns : this.autoTurns + 1;
   }
 
   clear() {
@@ -109,6 +117,7 @@ export class TurnGate {
 }
 
 function keyOf(m: Msg): string {
+  if (m.role === "toolResult") return `tool:${m.toolCallId ?? ""}:${m.timestamp ?? 0}`;
   return `${m.timestamp ?? 0}:${norm(textOf(m.content)).slice(0, 200)}`;
 }
 

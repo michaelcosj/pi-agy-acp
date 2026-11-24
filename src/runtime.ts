@@ -7,7 +7,8 @@ import type { ConfigOption, NewSessionResult, PermissionRequest, PermissionRespo
 import { isBanNotice } from "./ban.ts";
 import { addAlways, Dirs, DIRS_ENTRY, inside, requestPaths, rootOf, tooWide } from "./dirs.ts";
 import { TurnGate } from "./gate.ts";
-import { isPiAgentTool, isSubagentTool } from "./agy-config.ts";
+import { isPiTool, isSubagentTool } from "./agy-config.ts";
+import type { McpServerHandle } from "./mcp.ts";
 import { log } from "./log.ts";
 import { catalogFromSession, type CatalogEntry } from "./models.ts";
 import { type Subagent, SubagentWatcher } from "./subagents.ts";
@@ -25,7 +26,8 @@ const WAKE_SETTLE_MS = 1_500;
 export const SYSTEM_PROMPT_APPEND =
   "The user reads your replies in Pi, a terminal coding UI that acts as an ACP client. Format replies as Markdown. " +
   "Tool calls show to the user as one short line each, so summarize important tool results in your reply. " +
-  "When you start Pi child agents with the pi agent tool, each child's final reply arrives later as a new message that starts with \"Agent <name> finished\", so you can end your turn while they run.";
+  "Tools on the `pi` MCP server run after your turn ends: a call returns \"Running <tool>; result arrives in next message.\" and the result is the next message, so stop and wait for it. " +
+  "Work that you start in the background (for example child agents) can report later as a new message.";
 
 export interface UiLike {
   hasUI: boolean;
@@ -76,6 +78,8 @@ export class Runtime {
   extraEnv: Record<string, string> = {};
   /** MCP servers for session/new and session/resume (Pi's agent tool). */
   mcpServers: () => unknown[] = () => [];
+  /** Pi's MCP server: Pi's tools for agy. */
+  mcp: McpServerHandle | undefined;
   /** Runs agy in bubblewrap when on (PI_ANTIGRAVITY_SANDBOX=bwrap). */
   sandbox: SandboxConfig = sandboxConfig();
   /** The workspace that the running agy was started for (sandbox mounts). */
@@ -448,12 +452,12 @@ export class Runtime {
 
   private async permission(r: PermissionRequest): Promise<PermissionResponse> {
     const ctx = this.ctx;
-    // Pi's own agent tool: approve it here. agy asks for MCP tools even in
-    // auto mode, and its settings.json allow rules do not apply over ACP.
-    if (isPiAgentTool(r.toolCall ?? {})) {
+    // Pi's tools: approve here; Pi runs them with its own checks. agy asks for
+    // MCP tools even in auto mode, and its allow rules do not apply over ACP.
+    if (isPiTool(r.toolCall ?? {})) {
       const allow = r.options?.find((o) => o.kind === "allow_once") ?? r.options?.find((o) => o.kind === "allow_always");
       if (allow) {
-        log({ event: "permission_auto", tool: "mcp_pi_agent" });
+        log({ event: "permission_auto", tool: "pi" });
         return { outcome: { outcome: "selected", optionId: allow.optionId } };
       }
     }
