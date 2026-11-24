@@ -2,6 +2,7 @@
 import {
   type AssistantMessage,
   type AssistantMessageEventStream,
+  calculateCost,
   createAssistantMessageEventStream,
   type Model,
   type SimpleStreamOptions,
@@ -143,6 +144,9 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
       log({ event: "prompt", model: model.id, level, history: unseen.length, prefix: !!prefix, human, messages: fresh.length });
       runtime.gate.commit(fresh as any, human);
       if (!human) runtime.ctx?.ui.setStatus("antigravity-auto", `agy: automatic turn ${runtime.gate.autoTurns}/${runtime.gate.budget}`);
+      // The price lookup runs during the turn, so it does not delay the end.
+      const registry = runtime.ctx?.modelRegistry;
+      const price = runtime.prices.price(model.id, registry ? (p, id) => registry.find(p, id)?.cost as any : undefined).catch(() => undefined);
       const result = await s.agy.prompt(sessionId, promptBlocks(fresh, prefix));
       const cancelled = result.stopReason === "cancelled" || !!options?.signal?.aborted;
       translator.finish(cancelled);
@@ -150,7 +154,12 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
       output.stopReason = cancelled ? "aborted" : stopReason(result.stopReason);
       output.rawStopReason = result.stopReason;
       const usage = usageFrom(result.usage ?? (result._meta as any)?.usage);
-      if (usage) output.usage = usage;
+      if (usage) {
+        output.usage = usage;
+        // API-equivalent cost: you pay a subscription, not per token.
+        const p = await price;
+        if (p) calculateCost({ ...model, cost: p } as Model<any>, output.usage);
+      }
       output.providerThinkingLevel = level;
       log({ event: "prompt_end", stopReason: result.stopReason });
       if (runtime.checkBan(translator.text)) return fail(BANNED);

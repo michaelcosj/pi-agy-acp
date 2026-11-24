@@ -279,3 +279,13 @@ test("a child agent's folder joins the workspace at the next turn", async () => 
   assert.match(two.result.content.map((b: any) => b.text ?? "").join(""), /dirs \["\/tmp\/child-wt"\]/);
   runtime.stop();
 });
+
+test("cost: the API price of the model counts the turn's tokens", async () => {
+  const { runtime } = setup();
+  (runtime.ctx as any).modelRegistry = { find: (p: string, id: string) => (p === "google" && id === model.id ? { cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0 } } : undefined) };
+  runtime.gate.arm("hello");
+  const { result } = await run(runtime, [user("hello")]);
+  // fake agy: 10 input and 5 output tokens.
+  assert.equal(result.usage.cost.total, (10 * 2 + 5 * 10) / 1e6);
+  runtime.stop();
+});

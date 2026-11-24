@@ -257,3 +257,51 @@ test("dirs: inside, too wide, covers, nested folders", async () => {
   addAlways("/w/a", file);
   assert.deepEqual(readAlways(file), ["/w/a"]);
 });
+
+test("prices: Pi's registry first, then the pi.dev list (saved for a day)", async () => {
+  const { Prices, pricesFromCatalog, sellerOf } = await import("../src/prices.ts");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  assert.equal(sellerOf("gemini-4-neon"), "google");
+  assert.equal(sellerOf("claude-opus-5-5"), "anthropic");
+  assert.equal(sellerOf("gpt-oss-120b"), undefined);
+  assert.deepEqual(Object.keys(pricesFromCatalog({ "a": { id: "a", cost: { input: 1, output: 2 } }, "free": { id: "free", cost: { input: 0, output: 0 } } })), ["a"]);
+
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-prices-")), "p.json");
+  let now = 1_000_000;
+  const urls: string[] = [];
+  let down = false;
+  const fake = (async (url: URL) => {
+    urls.push(url.pathname);
+    if (down) throw new Error("offline");
+    const p = url.pathname.split("/").pop();
+    const body = p === "google" ? [{ id: "gemini-4-neon", cost: { input: 3, output: 15, cacheRead: 0.15, cacheWrite: 0 } }] : [{ id: "claude-opus-5-5", cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 } }];
+    return new Response(JSON.stringify(body), { status: 200 });
+  }) as any;
+  const prices = new Prices(file, fake, () => now);
+  const registry = (p: string, id: string) => (p === "google" && id === "gemini-4-argon" ? { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0 } : undefined);
+
+  // In Pi's registry: no request.
+  assert.equal((await prices.price("gemini-4-argon", registry))?.input, 2);
+  assert.equal(urls.length, 0);
+  // Not in the registry: one fetch of both lists, then from memory.
+  assert.equal((await prices.price("gemini-4-neon", registry))?.input, 3);
+  assert.equal((await prices.price("claude-opus-5-5", registry))?.output, 20);
+  assert.equal(urls.length, 2);
+  // No seller: no price, no request.
+  assert.equal(await prices.price("gpt-oss-120b", registry), undefined);
+  assert.equal(urls.length, 2);
+  // A new process reads the saved file.
+  const again = new Prices(file, fake, () => now);
+  assert.equal((await again.price("gemini-4-neon"))?.input, 3);
+  assert.equal(urls.length, 2);
+  // After a day it tries again; offline, it keeps the old list.
+  now += 25 * 60 * 60 * 1000;
+  down = true;
+  assert.equal((await again.price("gemini-4-neon"))?.input, 3);
+  assert.equal(urls.length, 3);
+  // No new try within an hour of a failure.
+  assert.equal((await again.price("gemini-4-neon"))?.input, 3);
+  assert.equal(urls.length, 3);
+});

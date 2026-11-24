@@ -19,6 +19,7 @@ Needs Node 22.19+, the `agy` CLI, and an interactive Pi session. Print and RPC m
 
 - **Models:** every model that agy offers (`antigravity/*`), with thinking levels, in Pi's model picker.
 - **Streaming:** text, thinking, one line per tool call, token usage, and session titles. Escape cancels.
+- **Cost:** Pi counts an API-equivalent cost: the turn's tokens at the model maker's API price (Google for Gemini, Anthropic for Claude). You pay a subscription, so this is not a bill. The price comes from Pi's model registry. When the registry has no price for a model, pi-agy-acp gets Pi's catalog from pi.dev, once a day (`~/.pi/agent/state/pi-agy-acp-prices.json`). GPT-OSS has no price and shows $0.
 - **Steering:** a message that you send during a turn goes to agy at once.
 - **Permissions:** agy runs in auto mode. Its permission prompts open as Pi dialogs.
 - **Workspace folders:** agy asks before it touches files outside its workspace. A child agent's folder (for example its worktree) joins the workspace at the next turn. For a file outside the workspace, the dialog also offers "Allow <repo> for this session" and "Always allow <parent folder>". `/antigravity-status` shows the extra folders.

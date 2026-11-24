@@ -11,6 +11,7 @@ import { isPiAgentTool, isSubagentTool } from "./agy-config.ts";
 import { log } from "./log.ts";
 import { catalogFromSession, type CatalogEntry } from "./models.ts";
 import { type Subagent, SubagentWatcher } from "./subagents.ts";
+import { Prices } from "./prices.ts";
 import { Translator } from "./translate.ts";
 
 export const SESSION_ENTRY = "antigravity-session";
@@ -28,6 +29,8 @@ export const SYSTEM_PROMPT_APPEND =
 export interface UiLike {
   hasUI: boolean;
   cwd: string;
+  /** Pi's model registry, for API prices. */
+  modelRegistry?: { find(provider: string, id: string): { cost?: unknown } | undefined };
   ui: {
     select(title: string, options: string[], opts?: { signal?: AbortSignal }): Promise<string | undefined>;
     confirm(title: string, message: string, opts?: { signal?: AbortSignal }): Promise<boolean>;
@@ -72,6 +75,8 @@ export class Runtime {
   extraEnv: Record<string, string> = {};
   /** MCP servers for session/new and session/resume (Pi's agent tool). */
   mcpServers: () => unknown[] = () => [];
+  /** API-equivalent prices, for the cost that Pi counts. */
+  prices = new Prices();
   /** Extra workspace folders: child agents' folders and folders that you allowed. */
   readonly dirs = new Dirs();
   /** The folder list that agy has for the bound session. */
