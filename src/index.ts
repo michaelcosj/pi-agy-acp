@@ -8,7 +8,8 @@ import { BANNED } from "./ban.ts";
 import { type McpServerHandle, startMcpServer } from "./mcp.ts";
 import { readUsage, usageLines } from "./usage.ts";
 import { registerSubagentView } from "./subagent-view.ts";
-import { type Binding, launchFromEnv, MODE, Runtime, SESSION_ENTRY, STEER_PREFIX } from "./runtime.ts";
+import { addChildDir, type Binding, launchFromEnv, MODE, Runtime, SESSION_ENTRY, STEER_PREFIX } from "./runtime.ts";
+import { DIRS_ENTRY } from "./dirs.ts";
 
 export default function antigravityExtension(pi: ExtensionAPI): void {
   const runtime = new Runtime();
@@ -32,9 +33,12 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
     runtime.ctx = ctx as any;
     runtime.gate.clear();
     let binding: Binding | undefined;
+    let dirs: string[] = [];
     for (const e of ctx.sessionManager.getBranch()) {
       if (e.type === "custom" && e.customType === SESSION_ENTRY) binding = e.data as Binding;
+      if (e.type === "custom" && e.customType === DIRS_ENTRY && Array.isArray((e.data as any)?.dirs)) dirs = (e.data as any).dirs;
     }
+    runtime.dirs.session = dirs.filter((d) => typeof d === "string");
     if (binding?.sessionId !== runtime.binding?.sessionId) runtime.unbind();
     runtime.binding = binding ? { ...binding } : undefined;
   }
@@ -49,6 +53,12 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
       ctx?.ui.notify(`pi-antigravity could not update agy config: ${(e as Error).message}`, "error");
     }
   }
+
+  // A local child agent's folder (often its own worktree) joins agy's workspace.
+  pi.events?.on?.("agent-bridge:child-cwd", (data: any) => {
+    const ctx = runtime.ctx;
+    if (ctx && addChildDir(runtime, data?.cwd, runtime.binding?.cwd ?? ctx.cwd)) log({ event: "child_dir" });
+  });
 
   // agy's own subagents: read-only rows in agent-bridge's list, and a viewer.
   registerSubagentView(pi, runtime);
@@ -159,6 +169,7 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
           ...(runtime.banned ? [BANNED] : []),
           `agy ${agy.version ?? "?"}: ${probe ? "signed in" : "NOT signed in (run agy)"}${runtime.tier ? ` · ${runtime.tier}` : ""}`,
           `Session: ${runtime.binding?.sessionId ?? "none yet"} · mode: ${MODE} (fixed)`,
+          `Extra folders: ${runtime.dirs.list(runtime.binding?.cwd ?? ctx.cwd).join(", ") || "none"}`,
           "Quota:",
           ...usage,
           `Models: ${runtime.catalog.map((e) => e.id).join(", ") || "?"}`,

@@ -13,7 +13,7 @@ import { NO_UI } from "./gate.ts";
 import { log } from "./log.ts";
 import { agyLevelFor, FALLBACK_CATALOG } from "./models.ts";
 import type { Runtime } from "./runtime.ts";
-import { stopReason, Translator, usageFrom } from "./translate.ts";
+import { GAP, stopReason, Translator, usageFrom } from "./translate.ts";
 
 export const LOGIN_HINT = "Antigravity is not signed in. Run `agy` once in a terminal and sign in with Google, then try again.";
 
@@ -27,7 +27,7 @@ function textOf(content: any): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
-    .map((c: any) => (c.type === "text" ? c.text : c.type === "thinking" ? "" : c.type === "image" ? "[image]" : c.type === "toolCall" ? `[tool call ${c.name}]` : ""))
+    .map((c: any) => (c.type === "text" ? c.text.split(GAP).join("") : c.type === "thinking" ? "" : c.type === "image" ? "[image]" : c.type === "toolCall" ? `[tool call ${c.name}]` : ""))
     .filter(Boolean)
     .join("\n");
 }

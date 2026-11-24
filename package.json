@@ -12,6 +12,7 @@
   ],
   "files": [
     "src",
+    "bin/mcp-bridge.mjs",
     "README.md"
   ],
   "pi": {

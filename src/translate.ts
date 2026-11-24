@@ -13,6 +13,9 @@ export interface TurnSink {
   onMode?: (modeId: string) => void;
 }
 
+/** A line that trim() keeps, so Pi shows a blank line before the next thinking block. */
+export const GAP = "\n\u200b";
+
 const TOOL_ICON: Record<string, string> = { completed: "✓", failed: "✗" };
 
 export function toolLine(tool: ToolCallFields): string {
@@ -49,7 +52,7 @@ export class Translator {
   get text(): string {
     return this.output.content
       .filter((b): b is TextContent => b.type === "text")
-      .map((b) => b.text)
+      .map((b) => b.text.split(GAP).join(""))
       .join("");
   }
 
@@ -130,6 +133,12 @@ export class Translator {
 
   private append(kind: "text" | "thinking", delta: string) {
     if (this.current?.kind !== kind) {
+      // Pi puts a blank line after thinking but not before it, and it trims
+      // text, so a plain newline does not show. End the text with an invisible line.
+      if (kind === "thinking" && this.current?.kind === "text") {
+        const last = (this.output.content[this.current.index] as TextContent).text;
+        if (last.trim()) this.append("text", last.endsWith("\n") ? GAP.slice(1) : GAP);
+      }
       this.close();
       const block: Block = kind === "text" ? { type: "text", text: "" } : { type: "thinking", thinking: "" };
       this.output.content.push(block);

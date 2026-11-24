@@ -244,3 +244,38 @@ test("ban: the suspension notice stops all later turns", async () => {
   assert.match(next.result.errorMessage!, /disabled Antigravity/);
   runtime.stop();
 });
+
+test("outside the workspace: allow the folder for this session", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-wt-")));
+  const file = path.join(dir, "a.md");
+  fs.writeFileSync(file, "x");
+  const { runtime, calls } = setup({ select: `Allow ${dir} for this session` });
+  // Turn 1: one dialog; Pi approves the second request itself.
+  runtime.gate.arm("x");
+  const one = await run(runtime, [user(`outside ${file}`)]);
+  assert.match(one.result.content.map((b: any) => b.text ?? "").join(""), /outcomes a a dirs \[\]/);
+  assert.equal(calls.select.length, 1);
+  assert.ok(calls.entries.some((e) => e.t === "antigravity-dirs" && e.d.dirs[0] === dir));
+  // Turn 2: agy gets the folder through session/resume.
+  runtime.gate.arm("dirs");
+  const two = await run(runtime, [user(`outside ${file}`), one.result, user("dirs")]);
+  assert.match(two.result.content.map((b: any) => b.text ?? "").join(""), new RegExp(`dirs \\["${dir}"\\]`));
+  runtime.stop();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a child agent's folder joins the workspace at the next turn", async () => {
+  const { addChildDir } = await import("../src/runtime.ts");
+  const { runtime } = setup();
+  runtime.gate.arm("dirs");
+  const one = await run(runtime, [user("dirs")]);
+  assert.match(one.result.content.map((b: any) => b.text ?? "").join(""), /dirs \[\]/);
+  assert.ok(addChildDir(runtime, "/tmp/child-wt", process.cwd()));
+  assert.ok(!addChildDir(runtime, path.join(process.cwd(), "sub"), process.cwd()));
+  runtime.gate.arm("dirs");
+  const two = await run(runtime, [user("dirs"), one.result, user("dirs")]);
+  assert.match(two.result.content.map((b: any) => b.text ?? "").join(""), /dirs \["\/tmp\/child-wt"\]/);
+  runtime.stop();
+});

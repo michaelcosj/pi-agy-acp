@@ -17,9 +17,10 @@ test("MCP server: auth, tools/list, tools/call through agent-bridge:call", async
   };
   const mcp = (await startMcpServer({ events }))!;
   const entry = mcp.acpEntry();
-  assert.equal(entry.type, "http");
   assert.equal(entry.name, "pi");
-  const post = (body: unknown, auth = entry.headers[0].value) =>
+  assert.equal(entry.command, process.execPath);
+  const auth0 = entry.env.find((e) => e.name === "PI_AG_MCP_AUTH")!.value;
+  const post = (body: unknown, auth = auth0) =>
     fetch(mcp.url, { method: "POST", headers: { "content-type": "application/json", authorization: auth }, body: JSON.stringify(body) });
   const rpc = async (method: string, params?: unknown) => (await (await post({ jsonrpc: "2.0", id: 1, method, params })).json()) as any;
 
@@ -54,10 +55,34 @@ test("MCP server: no agent-bridge gives a clear error", async () => {
   const mcp = (await startMcpServer({ events: { emit() {} } }))!;
   const r = await fetch(mcp.url, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: mcp.acpEntry().headers[0].value },
+    headers: { "content-type": "application/json", authorization: `Bearer ${mcp.token}` },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agent", arguments: { action: "status" } } }),
   });
   const j = (await r.json()) as any;
   assert.match(j.result.content[0].text, /agent-bridge is not loaded/);
   mcp.close();
+});
+
+test("stdio bridge: agy's stdio MCP lines reach Pi's server", async () => {
+  const { spawn } = await import("node:child_process");
+  const events = { emit(name: string, d: any) { if (name === "agent-bridge:call") { d.accept(); d.reply({ text: "ok" }); } } };
+  const mcp = (await startMcpServer({ events }))!;
+  const e = mcp.acpEntry();
+  const child = spawn(e.command, e.args, { env: { ...process.env, ...Object.fromEntries(e.env.map((x) => [x.name, x.value])) } });
+  const lines: any[] = [];
+  let buf = "";
+  child.stdout.on("data", (d) => {
+    buf += d;
+    for (let i; (i = buf.indexOf("\n")) >= 0; buf = buf.slice(i + 1)) lines.push(JSON.parse(buf.slice(0, i)));
+  });
+  const send = (m: unknown) => child.stdin.write(`${JSON.stringify(m)}\n`);
+  send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  send({ jsonrpc: "2.0", method: "notifications/initialized" });
+  send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  for (let i = 0; i < 100 && lines.length < 2; i++) await new Promise((r) => setTimeout(r, 20));
+  child.kill();
+  mcp.close();
+  assert.equal(lines.length, 2);
+  assert.equal(lines.find((l) => l.id === 1).result.serverInfo.name, "pi");
+  assert.deepEqual(lines.find((l) => l.id === 2).result.tools.map((t: any) => t.name), ["agent"]);
 });

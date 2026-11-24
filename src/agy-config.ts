@@ -7,7 +7,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const PI_ENV = "PI_ANTIGRAVITY";
 export const MCP_ALLOW_RULE = "mcp(pi/*)";
 const OLD_HOOK = "pi-antigravity-guard";
 

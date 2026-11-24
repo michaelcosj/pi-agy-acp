@@ -21,6 +21,7 @@ Needs Node 22.19+, the `agy` CLI, and an interactive Pi session. Print and RPC m
 - **Streaming:** text, thinking, one line per tool call, token usage, and session titles. Escape cancels.
 - **Steering:** a message that you send during a turn goes to agy at once.
 - **Permissions:** agy runs in auto mode. Its permission prompts open as Pi dialogs.
+- **Workspace folders:** agy asks before it touches files outside its workspace. A child agent's folder (for example its worktree) joins the workspace at the next turn. For a file outside the workspace, the dialog also offers "Allow <repo> for this session" and "Always allow <parent folder>". `/antigravity-status` shows the extra folders.
 - **agy commands:** `/agy <command> [args]`, for example `/agy goal …`. `/compact` runs agy's own compaction.
 - **Background work:** when agy continues by itself, Pi shows the result as a message.
 - **Pi child agents:** Gemini gets Pi's `agent` tool over a local MCP server. It can start, message, wait for, and stop Pi child agents on other providers. A child's result starts a new Gemini turn. Needs [agent-bridge](https://github.com/michaelcosj/dotfiles/tree/main/nix/config/pi/agent/extensions/agent-bridge) and Rex.
@@ -30,13 +31,42 @@ Needs Node 22.19+, the `agy` CLI, and an interactive Pi session. Print and RPC m
 
 ## How it works
 
-Pi starts `agy acp --process-per-session` and talks to it over the Agent Client Protocol, as Zed and T3 Code do. agy owns the agent: tools, system prompt, context, and subagents. Pi is the UI. Pi does not read your Google credentials and does not call Google's APIs.
+Pi starts `agy acp` and talks to it over the Agent Client Protocol, as Zed and T3 Code do. agy owns the agent: tools, system prompt, context, and subagents. Pi is the UI. Pi does not read your Google credentials and does not call Google's APIs.
 
 Each Pi session keeps one agy session. A branch, or a session that agy lost, starts a new agy session, and Pi asks whether to send the earlier messages.
 
 Turns that you did not type, such as a child's result, use a budget (2 per typed message). Pi children may not use `antigravity/*` models.
 
 Pi's own tools, tool hooks, and system prompt do not apply to these models. agy reads `AGENTS.md`, `GEMINI.md`, and its own skills.
+
+## Compared with T3 Code
+
+[T3 Code](https://github.com/pingdotgg/t3code) is a popular ACP client for agy. pi-agy-acp does nothing toward agy or Google that T3 Code does not also do, with one exception: the quota (see below). The table lists each thing that Pi sends to agy or starts. It was checked against T3 Code's source in November 2026.
+
+| pi-agy-acp | T3 Code |
+|---|---|
+| Starts `agy acp` | Same, with its own profile flags |
+| `initialize`: can read files; no file writes, no terminal | Same capabilities |
+| `session/new` with the cwd, one MCP server (a stdio bridge to Pi's `agent` tool), and a short `systemPrompt.append` | Same: its `t3-code` MCP server and a system prompt append |
+| `session/resume`, `session/close` | Same, and also `session/load`, `fork`, and `list` |
+| `additionalDirectories` on new and resume; a change restarts agy between turns | Same: tracked folders and worktrees, sent on new, resume, load, and fork |
+| `set_config_option`: `mode=auto`, `model`, `thought_level` at each turn | Same |
+| `session/prompt` with text, images, and files; a prompt during a turn as a steer | Same, also audio and PDF links |
+| `session/cancel` on Escape | Same, then `session/close` |
+| A scratch session in a temp folder to read the model list | Same (`t3-antigravity-setup-*`) |
+| Earlier Pi messages as text in a new session, after you confirm | Same "context handoff", with no question |
+| Approves its own MCP tool, shows a dialog for all else | Approves its own MCP tools; in full access, approves all |
+| Reads agy's subagent records and transcripts on disk (read-only) | Same, also agy's SQLite files, and deletes old session files |
+| A child's result starts a turn (at most 2 per message that you type) | Same, and also "continue" after errors and after a limit reset, with no fixed limit |
+| agy's own background output is only shown | Same |
+| `/compact` and `/agy <command>` send slash text as a prompt | Same |
+| **Quota: runs `agy -p "/usage"`** | **Reads agy's OAuth token and calls Google's quota API (`cloudcode-pa…/v1internal`) with an Antigravity user agent** |
+
+The quota is the one difference. Pi runs agy's own CLI command, which you can also type yourself. Pi does not read agy's credentials and does not call Google's APIs. T3 Code's method reads more.
+
+T3 Code also does things that Pi does not do: its own sign-in flow, a `zed` client name for old agy versions, a download and update of agy, and extra agy prompts in hidden sessions (for example, for commit messages).
+
+This comparison does not make either client safe. Google's terms still apply, and T3 Code users were suspended too.
 
 ## Settings
 
@@ -49,6 +79,7 @@ Pi's own tools, tool hooks, and system prompt do not apply to these models. agy 
 | `PI_AG_MAX_CHILDREN` | `6` | Most child agents at once |
 | `PI_AG_MAX_WAIT_S` | `240` | Longest `agent wait` per call |
 | `PI_ANTIGRAVITY_LOG` | off | `1` writes `/tmp/pi-antigravity-<pid>.jsonl` (no message text) |
+| `PI_ANTIGRAVITY_CONFIG` | `~/.pi/agent/pi-agy-acp.json` | File with the "always" folders (`additionalDirectories`) |
 
 ## License
 

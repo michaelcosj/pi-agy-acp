@@ -158,15 +158,14 @@ Decisions (2026-11-21), after a check of T3 Code's code and issues showed
 that T3 Code gives agy orchestration tools over MCP, wakes the parent on a
 child's result, and runs agy's subagents:
 
-- `agy acp --process-per-session` (needed for HTTP MCP).
 - `mcp.ts`: Pi's `agent` tool for agy, over streamable-HTTP MCP on
-  127.0.0.1 with a bearer token. Calls go to agent-bridge over the event bus
+  127.0.0.1 with a bearer token (since 5.1 behind a stdio bridge). Calls go to agent-bridge over the event bus
   (`agent-bridge:call`, `notify: true`), so a child's result posts to the
   Pi session. Any model, `antigravity/*` included.
 - `gate.ts`: any new user-role message starts a turn. All new messages go
   in one prompt. Turns that you did not type use a budget (5) that typed
   text refills. Messages that agy got are not sent again.
-- Auto mode only: set on every session, reverted if agy leaves it.
+- Auto mode only: set on every session (since 5.1: at each turn start).
 - agy subagents and swarms allowed, shown read-only: `subagents.ts` reads
   agy's `brain/` records (role, state, idle reply, transcript);
   `subagent-view.ts` sends rows to agent-bridge (`agent-bridge:external`)
@@ -178,6 +177,31 @@ child's result, and runs agy's subagents:
 
 Live checks still open: the MCP agent tool from a typed prompt, a child
 result that wakes Gemini, the subagent rows during a real run.
+
+### 5.1 Same as T3 Code, workspace folders (2026-11-24)
+
+A source check of T3 Code found three things that only Pi did. They are
+changed so that Pi does nothing toward agy that T3 Code does not do:
+
+- Plain `agy acp`, no `--process-per-session` and no marker env var. The
+  agent tool is a stdio MCP server (`bin/mcp-bridge.mjs`) that forwards to
+  the HTTP server in `mcp.ts`, as T3's `acp-mcp-bridge`. Live check: agy
+  1.5.12 starts it and lists the tool (no prompt sent).
+- Auto mode is set at the start of each turn. When agy leaves it, Pi warns
+  and does not send a request.
+- Folder changes restart agy and resume the session with the new
+  `additionalDirectories`, between turns only. T3 sends the list only on
+  session/new, resume, load, and fork.
+
+The quota (`agy -p "/usage"`) is the one exception. T3 reads agy's OAuth
+token and calls Google's quota API. The README says this.
+
+`dirs.ts`: extra workspace folders (ACP `additionalDirectories`). Sources: a
+local child's cwd (`agent-bridge:child-cwd` event), and the permission
+dialog: "for this session" (git root of the file, saved as an
+`antigravity-dirs` entry) or "always" (the folder above it, in
+`~/.pi/agent/pi-agy-acp.json`; refused for `~` and above). During a turn, Pi
+approves requests inside allowed folders itself; agy gets them at the next turn.
 
 ## 6. Steps
 

@@ -5,8 +5,9 @@ import path from "node:path";
 import { AgyProcess, isAuthRequired } from "./acp/agent.ts";
 import type { ConfigOption, NewSessionResult, PermissionRequest, PermissionResponse, SessionNotification } from "./acp/types.ts";
 import { isBanNotice } from "./ban.ts";
+import { addAlways, Dirs, DIRS_ENTRY, inside, requestPaths, rootOf, tooWide } from "./dirs.ts";
 import { TurnGate } from "./gate.ts";
-import { isPiAgentTool, isSubagentTool, PI_ENV } from "./agy-config.ts";
+import { isPiAgentTool, isSubagentTool } from "./agy-config.ts";
 import { log } from "./log.ts";
 import { catalogFromSession, type CatalogEntry } from "./models.ts";
 import { type Subagent, SubagentWatcher } from "./subagents.ts";
@@ -51,10 +52,8 @@ export interface Launch {
 export function launchFromEnv(env: Record<string, string | undefined> = process.env): Launch {
   const command = env.PI_ANTIGRAVITY_COMMAND?.trim() || "agy";
   const args = env.PI_ANTIGRAVITY_ARGS?.trim() ? env.PI_ANTIGRAVITY_ARGS.trim().split(/\s+/) : command.endsWith("agy_acp_server") ? [] : ["acp"];
-  // agy acp reports HTTP MCP support only with one worker per session.
-  if (args[0] === "acp" && !args.includes("--process-per-session")) args.push("--process-per-session");
-  // The guard hook acts only on agy processes with this variable.
-  return { command, args, env: { [PI_ENV]: "1" } };
+  // Plain `agy acp`, as T3 Code starts it. Pi's agent tool is a stdio MCP server.
+  return { command, args, env: {} };
 }
 
 export class Runtime {
@@ -73,6 +72,10 @@ export class Runtime {
   extraEnv: Record<string, string> = {};
   /** MCP servers for session/new and session/resume (Pi's agent tool). */
   mcpServers: () => unknown[] = () => [];
+  /** Extra workspace folders: child agents' folders and folders that you allowed. */
+  readonly dirs = new Dirs();
+  /** The folder list that agy has for the bound session. */
+  private sentDirs = "";
   /** Set when Google's suspension notice arrives. Then no more turns run. */
   banned = false;
   onBan: (() => void) | undefined;
@@ -149,13 +152,25 @@ export class Runtime {
 
   /** The ACP session for the bound Pi session: resumed, or new. */
   async session(cwd: string): Promise<{ agy: AgyProcess; sessionId: string; fresh: boolean }> {
+    const additionalDirectories = this.dirs.list(cwd);
+    const dirsKey = additionalDirectories.join("\n");
+    // agy gets the folder list only when it opens a session, so a changed list
+    // restarts agy and resumes the session, as T3 Code does. Between turns only.
+    if (this.binding?.cwd === cwd && this.unsubscribe && dirsKey !== this.sentDirs && !this.activePrompt) {
+      log({ event: "dirs_restart", count: additionalDirectories.length });
+      this.restartAgy();
+    }
     const agy = await this.ensure();
-    if (this.binding && this.binding.cwd === cwd && this.unsubscribe) return { agy, sessionId: this.binding.sessionId, fresh: false };
+    if (this.binding && this.binding.cwd === cwd && this.unsubscribe) {
+      await this.setMode(this.binding.sessionId);
+      return { agy, sessionId: this.binding.sessionId, fresh: false };
+    }
     let fresh = false;
     let sessionId: string | undefined;
     if (this.binding && this.binding.cwd === cwd) {
       try {
-        const r = await agy.resumeSession(this.binding.sessionId, cwd, { mcpServers: this.mcpServers() });
+        const r = await agy.resumeSession(this.binding.sessionId, cwd, { mcpServers: this.mcpServers(), additionalDirectories });
+        log({ event: "dirs", count: additionalDirectories.length });
         sessionId = this.binding.sessionId;
         this.absorb(r);
       } catch (e) {
@@ -164,25 +179,40 @@ export class Runtime {
       }
     }
     if (!sessionId) {
-      const r = await agy.newSession(cwd, { systemPromptAppend: SYSTEM_PROMPT_APPEND, mcpServers: this.mcpServers() });
+      const r = await agy.newSession(cwd, { systemPromptAppend: SYSTEM_PROMPT_APPEND, mcpServers: this.mcpServers(), additionalDirectories });
       this.absorb(r);
       sessionId = r.sessionId;
       fresh = true;
       this.binding = { sessionId, cwd };
       this.pi?.appendEntry(SESSION_ENTRY, this.binding);
     }
+    this.sentDirs = dirsKey;
     this.applied.clear();
     this.unsubscribe?.();
     this.unsubscribe = agy.subscribe(sessionId, (n) => this.onUpdate(n));
     this.subagents.kick(30_000);
-    // Auto only: a session that cannot switch to auto does not run.
+    await this.setMode(sessionId);
+    return { agy, sessionId, fresh };
+  }
+
+  /** Auto only, set at the start of each turn. A session that cannot switch to auto does not run.
+   *  No request when agy is already in auto mode. */
+  private async setMode(sessionId: string) {
     try {
       await this.setOption(sessionId, "mode", MODE);
     } catch (e) {
       throw new Error(`agy would not switch to ${MODE} mode: ${(e as Error).message}`);
     }
     this.mode = MODE;
-    return { agy, sessionId, fresh };
+  }
+
+  /** Stops the agy process but keeps the binding, so the next turn resumes the session. */
+  private restartAgy() {
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    this.agy?.kill();
+    this.agy = undefined;
+    this.applied.clear();
   }
 
   /**
@@ -234,6 +264,7 @@ export class Runtime {
   /** Forget the bound session, so the next turn starts a new one. */
   unbind() {
     this.binding = undefined;
+    this.sentDirs = "";
     this.unsubscribe?.();
     this.unsubscribe = undefined;
   }
@@ -350,9 +381,10 @@ export class Runtime {
     const u = n.update as any;
     if (u.sessionUpdate === "current_mode_update" && u.currentModeId !== MODE) {
       log({ event: "mode_changed", to: u.currentModeId });
+      // Pi sets auto again at the start of the next turn (setMode), as each turn's config.
       this.applied.delete("mode");
-      void this.setOption(n.sessionId, "mode", MODE).catch(() => {});
-      this.ctx?.ui.notify(`Antigravity left ${MODE} mode (${u.currentModeId}); Pi switched it back.`, "warning");
+      this.mode = u.currentModeId;
+      this.ctx?.ui.notify(`Antigravity left ${MODE} mode (${u.currentModeId}). Pi sets ${MODE} again at the next turn.`, "warning");
       return;
     }
     if ((u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") && isSubagentTool(u)) this.subagents.kick();
@@ -371,14 +403,41 @@ export class Runtime {
         return { outcome: { outcome: "selected", optionId: allow.optionId } };
       }
     }
+    const allowOnce = r.options?.find((o) => o.kind === "allow_once") ?? r.options?.find((o) => o.kind === "allow_always");
+    const cwd = this.binding?.cwd ?? ctx?.cwd ?? process.cwd();
+    const paths = requestPaths(r, cwd);
+    // A folder that you allowed, which agy gets only at the next turn.
+    if (allowOnce && this.dirs.covers(paths, cwd)) {
+      log({ event: "permission_auto", tool: "allowed_dir" });
+      return { outcome: { outcome: "selected", optionId: allowOnce.optionId } };
+    }
     if (!ctx?.hasUI || !r.options?.length) {
       const reject = r.options?.find((o) => o.kind === "reject_once");
       return reject ? { outcome: { outcome: "selected", optionId: reject.optionId } } : { outcome: { outcome: "cancelled" } };
     }
     const title = describePermission(r);
     const labels = r.options.map((o) => o.name);
-    log({ event: "permission", kind: r.toolCall?.kind, options: r.options.map((o) => o.kind) });
+    // Paths outside the workspace: also allow their folder for this session, or always.
+    const outside = paths.filter((p) => !inside(p, cwd) && !this.dirs.covers([p], cwd));
+    const root = allowOnce && outside.length ? await rootOf(outside[0]) : undefined;
+    const same = root && outside.every((p) => inside(p, root));
+    const parent = root && path.dirname(root);
+    const sessionLabel = same && !tooWide(root!) ? `Allow ${tilde(root!)} for this session` : undefined;
+    const alwaysLabel = same && parent && !tooWide(parent) ? `Always allow ${tilde(parent)} (all sessions)` : undefined;
+    const extra = [sessionLabel, alwaysLabel].filter((x): x is string => !!x);
+    if (extra.length) labels.splice(labels.indexOf(allowOnce!.name) + 1, 0, ...extra);
+    log({ event: "permission", kind: r.toolCall?.kind, options: r.options.map((o) => o.kind), dirChoices: extra.length });
     const choice = await ctx.ui.select(title, labels);
+    if (choice && (choice === sessionLabel || choice === alwaysLabel)) {
+      if (choice === alwaysLabel) {
+        try {
+          addAlways(parent!);
+        } catch (e) {
+          ctx.ui.notify(`Could not save ${parent}: ${(e as Error).message}`, "error");
+        }
+      } else if (this.dirs.add(root!, cwd)) this.pi?.appendEntry(DIRS_ENTRY, { dirs: this.dirs.session });
+      return { outcome: { outcome: "selected", optionId: allowOnce!.optionId } };
+    }
     const option = r.options.find((o) => o.name === choice);
     if (!option) {
       const reject = r.options.find((o) => o.kind === "reject_once");
@@ -408,6 +467,18 @@ function isOwnText(m: { content?: unknown }): boolean {
   const c = m.content;
   const first = typeof c === "string" ? c : Array.isArray(c) ? (c[0] as any)?.text : undefined;
   return typeof first === "string" && (first.startsWith(WAKE_PREFIX) || first.startsWith(STEER_PREFIX));
+}
+
+function tilde(p: string): string {
+  const home = (process.env.HOME ?? "").replace(/\/+$/, "");
+  return home && (p === home || p.startsWith(`${home}/`)) ? `~${p.slice(home.length)}` : p;
+}
+
+/** A child agent's folder joins agy's workspace at the next turn. */
+export function addChildDir(runtime: Runtime, dir: unknown, cwd: string): boolean {
+  if (typeof dir !== "string" || !path.isAbsolute(dir) || !runtime.dirs.add(dir, cwd)) return false;
+  runtime.pi?.appendEntry(DIRS_ENTRY, { dirs: runtime.dirs.session });
+  return true;
 }
 
 export function describePermission(r: PermissionRequest): string {

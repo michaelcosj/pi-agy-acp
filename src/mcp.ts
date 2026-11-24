@@ -1,12 +1,14 @@
 // In-process MCP server (streamable HTTP on 127.0.0.1) that gives agy Pi's
 // `agent` tool, the same way T3 Code gives agy its orchestrator tools. agy
-// connects to it through `session/new.mcpServers`. Calls go to agent-bridge
+// starts bin/mcp-bridge.mjs (a stdio MCP server from `session/new.mcpServers`),
+// which forwards to this server, as T3's `acp-mcp-bridge` does. Calls go to agent-bridge
 // over the Pi event bus ("agent-bridge:call"). A child's result posts to the
 // Pi session when it settles, which starts an Antigravity turn (within the
 // gate's budget of turns that you did not type).
 import crypto from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { fileURLToPath } from "node:url";
 import { log } from "./log.ts";
 
 const PROTOCOL = "2025-06-18";
@@ -16,6 +18,9 @@ const ACTIONS = ["start", "send", "wait", "status", "stop"] as const;
 const MAX_WAIT_S = Number(process.env.PI_AG_MAX_WAIT_S) || 240;
 
 type Events = { emit(name: string, data: unknown): void };
+
+/** The stdio MCP bridge that agy starts. */
+export const BRIDGE = fileURLToPath(new URL("../bin/mcp-bridge.mjs", import.meta.url));
 
 export const AGENT_TOOL = {
   name: "agent",
@@ -62,8 +67,8 @@ export function checkCall(params: Record<string, unknown>, started: Set<string>,
 export interface McpServerHandle {
   url: string;
   token: string;
-  /** The `mcpServers` entry for ACP session/new and session/resume. */
-  acpEntry(): { type: "http"; name: string; url: string; headers: { name: string; value: string }[] };
+  /** The `mcpServers` entry for ACP session/new and session/resume: a stdio bridge to this server. */
+  acpEntry(): { name: string; command: string; args: string[]; env: { name: string; value: string }[] };
   /** Stops every child started from this session. */
   stopAll(): void;
   /** After a ban: refuse all calls. */
@@ -185,7 +190,15 @@ export async function startMcpServer(pi: { events?: Events }): Promise<McpServer
         started.delete(name);
       }
     },
-    acpEntry: () => ({ type: "http", name: "pi", url, headers: [{ name: "Authorization", value: `Bearer ${token}` }] }),
+    acpEntry: () => ({
+      name: "pi",
+      command: process.execPath,
+      args: [BRIDGE],
+      env: [
+        { name: "PI_AG_MCP_URL", value: url },
+        { name: "PI_AG_MCP_AUTH", value: `Bearer ${token}` },
+      ],
+    }),
     close: () => {
       server.close();
       if (g.__piAgMcp === handle_) g.__piAgMcp = undefined;

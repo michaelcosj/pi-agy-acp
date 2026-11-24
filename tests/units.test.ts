@@ -118,9 +118,9 @@ test("agent tool policy", () => {
 });
 
 test("launch from env", () => {
-  assert.deepEqual(launchFromEnv({}), { command: "agy", args: ["acp", "--process-per-session"], env: { PI_ANTIGRAVITY: "1" } });
+  assert.deepEqual(launchFromEnv({}), { command: "agy", args: ["acp"], env: {} });
   assert.deepEqual(launchFromEnv({ PI_ANTIGRAVITY_COMMAND: "/x/agy_acp_server" }).args, []);
-  assert.deepEqual(launchFromEnv({ PI_ANTIGRAVITY_ARGS: "acp --agent reviewer" }).args, ["acp", "--agent", "reviewer", "--process-per-session"]);
+  assert.deepEqual(launchFromEnv({ PI_ANTIGRAVITY_ARGS: "acp --agent reviewer" }).args, ["acp", "--agent", "reviewer"]);
 });
 
 test("permission title", () => {
@@ -222,4 +222,38 @@ test("usage from agy -p /usage", () => {
     { group: "Gemini Models", window: "Weekly Limit Remaining", remaining: "100%", resets: "2026-11-28T13:24:16Z" },
     { group: "Claude and GPT models", window: "Five Hour Limit Remaining", remaining: "80%", resets: undefined },
   ]);
+});
+
+test("a blank line separates tool lines from the next thinking block", async () => {
+  const { Translator, GAP } = await import("../src/translate.ts");
+  const output: any = { content: [] };
+  const t = new Translator(output, undefined);
+  t.update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "plan" } } as any);
+  t.update({ sessionUpdate: "tool_call", toolCallId: "1", title: "File a", status: "completed" } as any);
+  t.update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "next" } } as any);
+  t.finish();
+  assert.equal(output.content[1].text, `▸ File a ✓${GAP}`);
+  assert.ok(output.content[1].text.trim().endsWith("\u200b"));
+  assert.equal(t.text, "▸ File a ✓");
+});
+
+test("dirs: inside, too wide, covers, nested folders", async () => {
+  const { Dirs, inside, tooWide, requestPaths, readAlways, addAlways } = await import("../src/dirs.ts");
+  assert.ok(inside("/a/b/c", "/a/b") && inside("/a/b", "/a/b") && !inside("/a/bc", "/a/b"));
+  assert.ok(tooWide("/home/m", "/home/m") && tooWide("/home", "/home/m") && tooWide("/", "/home/m"));
+  assert.ok(!tooWide("/home/m/.local/share/worktrees/kojama", "/home/m"));
+  const d = new Dirs(() => ["/w/kojama"]);
+  assert.ok(!d.add("/w/kojama/phone-page", "/p"));
+  assert.ok(d.add("/x/y", "/p") && !d.add("/x/y/z", "/p") && !d.add("/p/sub", "/p"));
+  assert.deepEqual(d.list("/p"), ["/w/kojama", "/x/y"]);
+  assert.ok(d.covers(["/x/y/f"], "/p") && !d.covers(["/p/f"], "/p") && !d.covers([], "/p") && !d.covers(["/x/y/f", "/z"], "/p"));
+  assert.deepEqual(requestPaths({ toolCall: { locations: [{ path: "a.md" }], rawInput: { AbsolutePath: "/b" } } }, "/p"), ["/p/a.md", "/b"]);
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-cfg-")), "c.json");
+  assert.deepEqual(readAlways(file), []);
+  addAlways("/w/a", file);
+  addAlways("/w/a", file);
+  assert.deepEqual(readAlways(file), ["/w/a"]);
 });

@@ -14,6 +14,7 @@ const update = (sessionId, u) => send({ method: "session/update", params: { sess
 let nextId = 1000;
 const waiting = new Map();
 const cancelled = new Set();
+const dirs = new Map();
 const sessions = new Set();
 const request = (method, params) =>
   new Promise((resolve) => {
@@ -42,16 +43,18 @@ rl.on("line", async (line) => {
   const p = m.params ?? {};
   switch (m.method) {
     case "initialize":
-      return send({ id: m.id, result: { protocolVersion: 1, agentInfo: { name: "fake", version: "9.9.9" }, agentCapabilities: { _meta: { antigravity: { systemPrompt: { append: true } } } } } });
+      return send({ id: m.id, result: { protocolVersion: 1, agentInfo: { name: "fake", version: "9.9.9" }, agentCapabilities: { sessionCapabilities: { additionalDirectories: {} }, _meta: { antigravity: { systemPrompt: { append: true } } } } } });
     case "session/new": {
       if (process.env.FAKE_AGY_AUTH === "0") return send({ id: m.id, error: { code: -32000, message: "Authentication required" } });
       const id = `s${sessions.size + 1}`;
       sessions.add(id);
       process.stderr.write(`new ${JSON.stringify(p._meta ?? null)}\n`);
+      dirs.set(id, p.additionalDirectories ?? []);
       return send({ id: m.id, result: sessionResult(id) });
     }
     case "session/resume":
       if (!sessions.has(p.sessionId)) return send({ id: m.id, error: { code: -32602, message: "unknown session" } });
+      dirs.set(p.sessionId, p.additionalDirectories ?? []);
       return send({ id: m.id, result: {} });
     case "session/close":
       return send({ id: m.id, result: {} });
@@ -106,6 +109,24 @@ rl.on("line", async (line) => {
           options: [{ optionId: "a", name: "Allow", kind: "allow_once" }, { optionId: "r", name: "Deny", kind: "reject_once" }],
         });
         update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `outcome ${r?.outcome?.optionId}` } });
+        return send({ id: m.id, result: { stopReason: "end_turn" } });
+      }
+      // "outside <path>" → asks twice to read the path, then prints the outcomes and the folders it has.
+      const out = /^outside (\S+)$/.exec(text.trim());
+      if (out) {
+        const ask = () =>
+          request("session/request_permission", {
+            sessionId: sid,
+            toolCall: { toolCallId: "f", title: `File ${out[1]}`, kind: "read", locations: [{ path: out[1] }] },
+            options: [{ optionId: "a", name: "Allow", kind: "allow_once" }, { optionId: "r", name: "Deny", kind: "reject_once" }],
+          });
+        const a = await ask();
+        const b = await ask();
+        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `outcomes ${a?.outcome?.optionId} ${b?.outcome?.optionId} dirs ${JSON.stringify(dirs.get(sid))}` } });
+        return send({ id: m.id, result: { stopReason: "end_turn" } });
+      }
+      if (/^dirs$/.test(text.trim())) {
+        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `dirs ${JSON.stringify(dirs.get(sid))}` } });
         return send({ id: m.id, result: { stopReason: "end_turn" } });
       }
       if (/^subagent$/.test(text.trim())) {

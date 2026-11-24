@@ -139,16 +139,30 @@ export class AgyProcess {
     };
   }
 
-  newSession(cwd: string, opts: { mcpServers?: unknown[]; systemPromptAppend?: string } = {}) {
-    const params: Record<string, unknown> = { cwd, mcpServers: opts.mcpServers ?? [] };
+  /** agy takes extra workspace folders (ACP `additionalDirectories`). */
+  get canAddDirectories(): boolean {
+    return !!this.init.agentCapabilities?.sessionCapabilities?.additionalDirectories;
+  }
+
+  private dirs(list: string[] | undefined): Record<string, unknown> {
+    return list?.length && this.canAddDirectories ? { additionalDirectories: list } : {};
+  }
+
+  newSession(cwd: string, opts: { mcpServers?: unknown[]; systemPromptAppend?: string; additionalDirectories?: string[] } = {}) {
+    const params: Record<string, unknown> = { cwd, mcpServers: opts.mcpServers ?? [], ...this.dirs(opts.additionalDirectories) };
     if (opts.systemPromptAppend && this.canAppendSystemPrompt) {
       params._meta = { antigravity: { systemPrompt: { append: opts.systemPromptAppend } } };
     }
     return this.rpc.request<NewSessionResult>("session/new", params);
   }
 
-  resumeSession(sessionId: string, cwd: string, opts: { mcpServers?: unknown[] } = {}) {
-    return this.rpc.request<Partial<NewSessionResult>>("session/resume", { sessionId, cwd, mcpServers: opts.mcpServers ?? [] });
+  resumeSession(sessionId: string, cwd: string, opts: { mcpServers?: unknown[]; additionalDirectories?: string[] } = {}) {
+    return this.rpc.request<Partial<NewSessionResult>>("session/resume", {
+      sessionId,
+      cwd,
+      mcpServers: opts.mcpServers ?? [],
+      ...this.dirs(opts.additionalDirectories),
+    });
   }
 
   closeSession(sessionId: string) {
