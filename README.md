@@ -25,10 +25,29 @@ Needs Node 22.19+, the `agy` CLI, and an interactive Pi session. Print and RPC m
 - **Workspace folders:** agy asks before it touches files outside its workspace. A child agent's folder (for example its worktree) joins the workspace at the next turn. For a file outside the workspace, the dialog also offers "Allow <repo> for this session" and "Always allow <parent folder>". `/antigravity-status` shows the extra folders.
 - **agy commands:** `/agy <command> [args]`, for example `/agy goal …`. `/compact` runs agy's own compaction, and Pi shows agy's summary as a collapsed compaction entry.
 - **Background work:** when agy continues by itself, Pi shows the result as a message.
-- **Pi's tools:** Gemini gets Pi's other tools (from Pi itself and from your extensions, for example `questionnaire`, `web_search`, MCP tools, or an `agent` tool) over a local MCP server. Pi's file and shell tools (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) and `codemode` are not sent, because agy has its own tools and codemode would get around the sandbox. When agy calls a Pi tool, pi-agy-acp stops agy's turn (`session/cancel`), and Pi runs the tool as its own tool call, with its UI, hooks, and permission checks. The result goes to agy as the next prompt. A child agent that agy starts may not run on an `antigravity/*` model.
+- **Pi's tools:** Gemini can call Pi's tools and your extensions' tools, for example `questionnaire`, `web_search`, MCP tools, or an `agent` tool. See [Pi's tools](#pis-tools).
 - **agy subagents:** agy's own subagents show as read-only `agy-<role>` rows in the agent list. `/agy-subagents` lists them.
 - **Status:** `/antigravity-status` shows sign-in, tier, quota, session, automatic turns, and subagents.
 - **Suspension stop:** when Google's suspension notice arrives, all Antigravity turns and Pi tool calls from agy stop.
+
+## Pi's tools
+
+agy gets each active Pi tool on a local MCP server named `pi`. The list follows Pi: when you turn a tool on or off, agy gets the new list at the next turn.
+
+These tools are not sent:
+
+- Pi's file and shell tools (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`). agy has its own versions.
+- `codemode`. It would get around the sandbox.
+- The names in `PI_ANTIGRAVITY_EXCLUDE_TOOLS`.
+
+A call works in four steps:
+
+1. agy calls a Pi tool, for example `questionnaire`.
+2. pi-agy-acp stops agy's turn with `session/cancel`. agy makes no more model requests in that turn.
+3. Pi runs the tool as a normal tool call, with its UI, tool hooks, and permission checks. The call shows in Pi as a usual tool row.
+4. The next prompt sends the result to agy. This turn does not use the budget for automatic turns.
+
+agy's permission prompt for a Pi tool is approved at once, because Pi does its own checks when it runs the tool. A child agent that agy starts with an `agent` tool must have a `provider/model` that is not `antigravity/*`.
 
 ## Sandbox (Linux)
 
@@ -56,7 +75,7 @@ Each Pi session keeps one agy session. A branch, or a session that agy lost, sta
 
 Turns that you did not type, such as a child's result, use a budget (2 per typed message). The result of a Pi tool that agy called does not use the budget. Pi children may not use `antigravity/*` models.
 
-Pi's own tools, tool hooks, and system prompt do not apply to these models. agy reads `AGENTS.md`, `GEMINI.md`, and its own skills.
+agy uses its own file and shell tools and its own system prompt. Pi's system prompt and Pi's tool hooks for those tools do not apply. Pi's other tools do apply (see [Pi's tools](#pis-tools)). agy reads `AGENTS.md`, `GEMINI.md`, and its own skills.
 
 ## Compared with T3 Code
 
@@ -74,7 +93,7 @@ Pi's own tools, tool hooks, and system prompt do not apply to these models. agy 
 | `session/cancel` on Escape, and when agy calls a Pi tool (Pi runs the tool, and the result is the next prompt) | Same on Escape, then `session/close`; its MCP tools answer in the same turn |
 | A scratch session in a temp folder to read the model list | Same (`t3-antigravity-setup-*`) |
 | Earlier Pi messages as text in a new session, after you confirm | Same "context handoff", with no question |
-| Approves its own MCP tool, shows a dialog for all else | Approves its own MCP tools; in full access, approves all |
+| Approves its own MCP tools, shows a dialog for all else | Approves its own MCP tools; in full access, approves all |
 | Reads agy's subagent records and transcripts on disk (read-only) | Same, also agy's SQLite files, and deletes old session files |
 | A child's result starts a turn (at most 2 per message that you type) | Same, and also "continue" after errors and after a limit reset, with no fixed limit |
 | agy's own background output is only shown | Same |
