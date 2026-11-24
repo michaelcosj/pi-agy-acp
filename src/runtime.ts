@@ -395,6 +395,21 @@ export class Runtime {
     this.markSeen();
   }
 
+  /** Sends a slash command (for example /compact) and returns agy's text output. */
+  async runCommand(sessionId: string, text: string): Promise<string> {
+    const agy = await this.ensure();
+    const output = { content: [] as any[] };
+    const translator = new Translator(output as any, undefined);
+    this.beginPrompt(sessionId, translator);
+    try {
+      await agy.prompt(sessionId, [{ type: "text", text }]);
+    } finally {
+      this.endPrompt();
+    }
+    translator.finish();
+    return translator.text.trim();
+  }
+
   /** Called when a prompt opens, so wake output in flight is flushed first. */
   beginPrompt(sessionId: string, translator: Translator) {
     if (this.wake) {

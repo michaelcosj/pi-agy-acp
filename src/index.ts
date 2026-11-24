@@ -123,22 +123,28 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
       log({ event: "compact_cancelled", reason: event.reason });
       return { cancel: true };
     }
-    // You ran /compact: run agy's own /compact in the bound session.
-    const binding = runtime.binding;
-    if (!binding || !runtime.commands.some((c) => c.name === "compact")) {
-      ctx.ui.notify("Antigravity compacts its own context. Nothing to compact yet.", "info");
+    // You ran /compact: run agy's own /compact in the bound session. agy's
+    // command list arrives only after a session opens, so it is not checked
+    // here; a session that agy has not seen yet has nothing to compact.
+    if (!runtime.binding) {
+      ctx.ui.notify("Antigravity compacts its own context. Nothing to compact yet: send a message first.", "info");
       return { cancel: true };
     }
     try {
-      const agy = await runtime.ensure();
       const s = await runtime.session(ctx.cwd);
+      if (s.fresh) {
+        ctx.ui.notify("Antigravity started a new session. Nothing to compact yet.", "info");
+        return { cancel: true };
+      }
       const instructions = event.customInstructions?.trim();
       ctx.ui.setStatus("antigravity", "agy: compacting…");
-      await agy.prompt(s.sessionId, [{ type: "text", text: `/compact${instructions ? ` ${instructions}` : ""}` }]);
+      const text = await runtime.runCommand(s.sessionId, `/compact${instructions ? ` ${instructions}` : ""}`);
       runtime.markSeen();
+      log({ event: "compact_done", chars: text.length });
       return {
         compaction: {
-          summary: "Antigravity compacted its own context (agy /compact). The Antigravity session keeps its own summary.",
+          // Pi shows this collapsed; expand it to read agy's summary.
+          summary: compactSummary(text),
           firstKeptEntryId: event.preparation.firstKeptEntryId,
           tokensBefore: event.preparation.tokensBefore,
         },
@@ -212,6 +218,14 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
       pi.sendUserMessage(`/${text}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
     },
   });
+}
+
+/** Pi's compaction summary from agy's /compact output: the <summary> part if agy wrapped it. */
+export function compactSummary(text: string): string {
+  const head = "Antigravity compacted its own context (agy /compact). agy keeps this summary in its session:";
+  const m = /<summary>([\s\S]*?)<\/summary>/i.exec(text);
+  const body = (m ? m[1] : text).trim();
+  return body ? `${head}\n\n${body}` : `${head}\n\n(agy printed no summary)`;
 }
 
 export { createAntigravityProvider } from "./provider.ts";

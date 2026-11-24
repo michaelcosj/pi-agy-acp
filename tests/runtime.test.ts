@@ -289,3 +289,19 @@ test("cost: the API price of the model counts the turn's tokens", async () => {
   assert.equal(result.usage.cost.total, (10 * 2 + 5 * 10) / 1e6);
   runtime.stop();
 });
+
+test("/compact: agy's summary comes back as text", async () => {
+  const { compactSummary } = await import("../src/index.ts");
+  const { runtime } = setup();
+  runtime.gate.arm("hello");
+  await run(runtime, [user("hello")]);
+  const s = await runtime.session(process.cwd());
+  const text = await runtime.runCommand(s.sessionId, "/compact keep the plan");
+  assert.match(text, /<summary>/);
+  const summary = compactSummary(text);
+  assert.match(summary, /^Antigravity compacted its own context/);
+  assert.match(summary, /\*\*Task Overview\*\*\n- fix the bug$/);
+  assert.doesNotMatch(summary, /Compacting\.|<summary>/);
+  assert.match(compactSummary(""), /agy printed no summary/);
+  runtime.stop();
+});

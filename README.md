@@ -23,7 +23,7 @@ Needs Node 22.19+, the `agy` CLI, and an interactive Pi session. Print and RPC m
 - **Steering:** a message that you send during a turn goes to agy at once.
 - **Permissions:** agy runs in auto mode. Its permission prompts open as Pi dialogs.
 - **Workspace folders:** agy asks before it touches files outside its workspace. A child agent's folder (for example its worktree) joins the workspace at the next turn. For a file outside the workspace, the dialog also offers "Allow <repo> for this session" and "Always allow <parent folder>". `/antigravity-status` shows the extra folders.
-- **agy commands:** `/agy <command> [args]`, for example `/agy goal …`. `/compact` runs agy's own compaction.
+- **agy commands:** `/agy <command> [args]`, for example `/agy goal …`. `/compact` runs agy's own compaction, and Pi shows agy's summary as a collapsed compaction entry.
 - **Background work:** when agy continues by itself, Pi shows the result as a message.
 - **Pi child agents:** Gemini gets Pi's `agent` tool over a local MCP server. It can start, message, wait for, and stop Pi child agents on other providers. A child's result starts a new Gemini turn. Needs [agent-bridge](https://github.com/michaelcosj/dotfiles/tree/main/nix/config/pi/agent/extensions/agent-bridge) and Rex.
 - **agy subagents:** agy's own subagents show as read-only `agy-<role>` rows in the agent list. `/agy-subagents` lists them.

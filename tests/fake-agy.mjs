@@ -125,6 +125,10 @@ rl.on("line", async (line) => {
         update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `outcomes ${a?.outcome?.optionId} ${b?.outcome?.optionId} dirs ${JSON.stringify(dirs.get(sid))}` } });
         return send({ id: m.id, result: { stopReason: "end_turn" } });
       }
+      if (/^\/compact\b/.test(text.trim())) {
+        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Compacting.\n<summary>1. **Task Overview**\n- fix the bug</summary>" } });
+        return send({ id: m.id, result: { stopReason: "end_turn" } });
+      }
       if (/^dirs$/.test(text.trim())) {
         update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `dirs ${JSON.stringify(dirs.get(sid))}` } });
         return send({ id: m.id, result: { stopReason: "end_turn" } });
