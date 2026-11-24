@@ -27,7 +27,7 @@ Sources: [T3 Code ruling](https://discuss.ai.google.dev/t/tos-clarification-is-t
 agy's own wakes (`/goal`, background tasks, background subagents,
 `/schedule`) are first-party. Pi shows them and does not start them.
 
-## 2. Facts from the probe (`spike/probe-session-new.txt`)
+## 2. Facts from a probe of agy (initialize and session/new, no prompt)
 
 - `agy acp` 1.5.12, ACP protocol 1. Capabilities: `loadSession`, session
   resume/close/load/list/additionalDirectories, images, embedded context,
@@ -39,6 +39,10 @@ agy's own wakes (`/goal`, background tasks, background subagents,
 - Models offered to `clientInfo.name = "pi-antigravity"` include Gemini 4
   Neon/Argon/Hydrogen, Orchestrator, Gemini 3.8 Flash, Claude Opus/Sonnet
   5.5, and GPT-OSS 120B.
+- `mcpCapabilities: { http: true }` only with `--process-per-session`.
+  Plain `agy acp` starts stdio MCP servers from `session/new.mcpServers`
+  and sends them `server/discover`, `initialize`, and `tools/list`.
+- agy accepts `additionalDirectories` on `session/new` and `session/resume`.
 
 Still to check with real prompts (Step 7): update kinds, permission shape,
 usage, steering, `/compact`, wakes with no prompt open, background command
@@ -66,7 +70,6 @@ src/
   mcp.ts             in-process MCP server: Pi's agent tool for agy
   guard.ts           subagent/swarm deny hook, mcp(pi/*) allow rule
 tests/               node --test with a fake ACP agent
-spike/               probes and transcripts
 ```
 
 ## 4. Phase 1: the provider
@@ -237,4 +240,4 @@ third-party coding agents … is not supported under consumer plans".
 - Pi children may not use `antigravity/*` again; `start` needs `model`.
 - Automatic-turn budget default 2 (`0` turns it off).
 - `/antigravity-status` shows quota from `agy -p "/usage"` (no model call).
-- No automated test prompts: the spike scripts that prompt Gemini are gone.
+- No automated test prompts: the probe scripts that prompted Gemini are gone.
