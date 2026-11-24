@@ -76,11 +76,18 @@ export interface McpServerHandle {
   close(): void;
 }
 
-const g = globalThis as { __piAgMcp?: McpServerHandle & { started: Set<string> } };
+type Shared = McpServerHandle & { started: Set<string>; events: Events };
+const g = globalThis as { __piAgMcp?: Shared };
 
+/** One server per process, kept across reloads and session changes. Each call
+ *  gives it the newest event bus: an old `pi` is stale after a reload or a
+ *  session change, and a call on it throws. */
 export async function startMcpServer(pi: { events?: Events }): Promise<McpServerHandle | undefined> {
   if (!pi.events) return undefined;
-  if (g.__piAgMcp) return g.__piAgMcp;
+  if (g.__piAgMcp) {
+    g.__piAgMcp.events = pi.events;
+    return g.__piAgMcp;
+  }
   const token = crypto.randomBytes(24).toString("hex");
   const started = new Set<string>();
 
@@ -94,7 +101,12 @@ export async function startMcpServer(pi: { events?: Events }): Promise<McpServer
         resolve(r);
       };
       // notify: the child's result posts to this Pi session when it settles.
-      pi.events!.emit("agent-bridge:call", { params, signal, reply, notify: true, accept: () => (accepted = true) });
+      try {
+        handle_.events.emit("agent-bridge:call", { params, signal, reply, notify: true, accept: () => (accepted = true) });
+      } catch (e) {
+        log({ event: "bridge_emit_failed" });
+        return reply({ error: `Pi could not reach agent-bridge: ${(e as Error).message.split("\n")[0]}` });
+      }
       if (!accepted) reply({ error: "agent-bridge is not loaded in this Pi (it needs Rex)" });
     });
 
@@ -163,7 +175,10 @@ export async function startMcpServer(pi: { events?: Events }): Promise<McpServer
         return;
       }
       const batch = Array.isArray(msg);
-      const out = (await Promise.all((batch ? msg : [msg]).map((m: any) => handle(m, ac.signal)))).filter((r) => r !== undefined);
+      // An error here must not end Pi: answer it as a JSON-RPC error.
+      const safe = (m: any) =>
+        handle(m, ac.signal).catch((e) => (m?.id === undefined ? undefined : { jsonrpc: "2.0", id: m.id, error: { code: -32603, message: (e as Error).message.split("\n")[0] } }));
+      const out = (await Promise.all((batch ? msg : [msg]).map(safe))).filter((r) => r !== undefined);
       if (!out.length) {
         res.writeHead(202).end();
         return;
@@ -179,7 +194,8 @@ export async function startMcpServer(pi: { events?: Events }): Promise<McpServer
   });
   server.unref();
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
-  const handle_: McpServerHandle & { started: Set<string> } = {
+  const handle_: Shared = {
+    events: pi.events,
     url,
     token,
     started,

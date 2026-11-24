@@ -36,7 +36,8 @@ export function rosterRows(list: Subagent[]) {
   }));
 }
 
-export function registerSubagentView(pi: ExtensionAPI, runtime: Runtime) {
+/** Returns a function that removes the event listener. */
+export function registerSubagentView(pi: ExtensionAPI, runtime: Runtime): () => void {
   let ctxRef: any;
   const events = (pi as any).events;
 
@@ -93,7 +94,7 @@ export function registerSubagentView(pi: ExtensionAPI, runtime: Runtime) {
     });
   }
 
-  events?.on?.("agent-bridge:external-open", (d: any) => {
+  const off = events?.on?.("agent-bridge:external-open", (d: any) => {
     if (d?.source !== SOURCE) return;
     const names = rowNames(runtime.subagents.list);
     const id = [...names].find(([, n]) => n === d.name)?.[0];
@@ -123,4 +124,9 @@ export function registerSubagentView(pi: ExtensionAPI, runtime: Runtime) {
       if (i >= 0) await show(list[i].id);
     },
   });
+
+  return () => {
+    off?.();
+    runtime.onSubagents = undefined;
+  };
 }

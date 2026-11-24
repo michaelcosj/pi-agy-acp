@@ -86,3 +86,21 @@ test("stdio bridge: agy's stdio MCP lines reach Pi's server", async () => {
   assert.equal(lines.find((l) => l.id === 1).result.serverInfo.name, "pi");
   assert.deepEqual(lines.find((l) => l.id === 2).result.tools.map((t: any) => t.name), ["agent"]);
 });
+
+test("MCP server: a stale event bus gives an error, and the newest bus is used", async () => {
+  const stale = { emit() { throw new Error("This extension ctx is stale after session replacement or reload."); } };
+  const mcp = (await startMcpServer({ events: stale }))!;
+  const call = async () => {
+    const r = await fetch(mcp.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${mcp.token}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agent", arguments: { action: "status" } } }),
+    });
+    return ((await r.json()) as any).result.content[0].text as string;
+  };
+  assert.match(await call(), /could not reach agent-bridge: This extension ctx is stale/);
+  const fresh = { emit(_n: string, d: any) { d.accept(); d.reply({ text: "fresh bus" }); } };
+  assert.equal(await startMcpServer({ events: fresh }), mcp);
+  assert.equal(await call(), "fresh bus");
+  mcp.close();
+});

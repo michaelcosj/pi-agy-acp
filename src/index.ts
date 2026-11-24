@@ -55,13 +55,15 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
   }
 
   // A local child agent's folder (often its own worktree) joins agy's workspace.
-  pi.events?.on?.("agent-bridge:child-cwd", (data: any) => {
+  const offs: (() => void)[] = [];
+  const offChildCwd = pi.events?.on?.("agent-bridge:child-cwd", (data: any) => {
     const ctx = runtime.ctx;
     if (ctx && addChildDir(runtime, data?.cwd, runtime.binding?.cwd ?? ctx.cwd)) log({ event: "child_dir" });
   });
+  if (offChildCwd) offs.push(offChildCwd);
 
   // agy's own subagents: read-only rows in agent-bridge's list, and a viewer.
-  registerSubagentView(pi, runtime);
+  offs.push(registerSubagentView(pi, runtime));
 
   pi.on("session_start", async (_e, ctx) => {
     restore(ctx);
@@ -74,9 +76,15 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
     }
   });
   pi.on("session_tree", (_e, ctx) => restore(ctx));
-  pi.on("session_shutdown", (e) => {
-    if (e.reason === "reload") return;
+  // Also on reload: Pi then loads a new copy of this extension, and this copy's
+  // pi and ctx are stale. A call on them throws and ends Pi. The new copy
+  // resumes the agy session from the session entries.
+  pi.on("session_shutdown", () => {
     runtime.stop();
+    runtime.pi = undefined;
+    runtime.ctx = undefined;
+    runtime.onBan = undefined;
+    for (const off of offs.splice(0)) off();
   });
 
   // ---- input: typed text refills the gate's budget; steers go to agy now ----
