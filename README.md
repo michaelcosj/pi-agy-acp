@@ -30,6 +30,24 @@ Needs Node 22.19+, the `agy` CLI, and an interactive Pi session. Print and RPC m
 - **Status:** `/antigravity-status` shows sign-in, tier, quota, session, automatic turns, and subagents.
 - **Suspension stop:** when Google's suspension notice arrives, all Antigravity turns and child agents stop.
 
+## Sandbox (Linux)
+
+Set `PI_ANTIGRAVITY_SANDBOX=bwrap`, or `"sandbox": "bwrap"` in `~/.pi/agent/pi-agy-acp.json`, to run agy and every command that it starts inside [bubblewrap](https://github.com/containers/bubblewrap). agy then sees:
+
+| What | Access |
+|---|---|
+| `/usr`, `/etc`, `/nix`, your `PATH` folders and their install folders, git config | read-only |
+| The workspace: the cwd, the extra folders, and the git folders of worktrees | read-write |
+| `~/.gemini`, `~/.config/antigravity`, `~/.cache/antigravity` | read-write |
+| The rest of your home (`~/.ssh`, `~/.pi/agent/auth.json`, other projects), the host `/tmp` | not there |
+| Env vars with `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` in the name, and `SSH_AUTH_SOCK` | removed |
+| The desktop keyring (agy's sign-in) | through `xdg-dbus-proxy`, only `org.freedesktop.secrets` |
+| Network | the same as the host, so agy's traffic to Google does not change |
+
+Inside the sandbox, agy gets a copy of its settings with `enableTerminalSandbox: false`. agy's own terminal sandbox cannot start a Nix-built agy, and bwrap already contains every agy process. The host agy and its settings do not change. A change of the cwd or the extra folders restarts agy between turns with the new mounts.
+
+Add folders in `~/.pi/agent/pi-agy-acp.json`: `"sandboxReadOnly": ["~/tools"]`, `"sandboxReadWrite": ["/data"]`. Needs `bwrap` and `xdg-dbus-proxy` (Fedora installs both with Flatpak).
+
 ## How it works
 
 Pi starts `agy acp` and talks to it over the Agent Client Protocol, as Zed and T3 Code do. agy owns the agent: tools, system prompt, context, and subagents. Pi is the UI. Pi does not read your Google credentials and does not call Google's APIs.
@@ -46,7 +64,7 @@ Pi's own tools, tool hooks, and system prompt do not apply to these models. agy 
 
 | pi-agy-acp | T3 Code |
 |---|---|
-| Starts `agy acp` | Same, with its own profile flags |
+| Starts `agy acp` (optionally inside a local bubblewrap sandbox, which does not change agy's network traffic) | Same, with its own profile flags |
 | `initialize`: can read files; no file writes, no terminal | Same capabilities |
 | `session/new` with the cwd, one MCP server (a stdio bridge to Pi's `agent` tool), and a short `systemPrompt.append` | Same: its `t3-code` MCP server and a system prompt append |
 | `session/resume`, `session/close` | Same, and also `session/load`, `fork`, and `list` |
@@ -78,7 +96,8 @@ T3 Code also does things that Pi does not do: its own sign-in flow, a `zed` clie
 | `PI_AG_MAX_CHILDREN` | `6` | Most child agents at once |
 | `PI_AG_MAX_WAIT_S` | `240` | Longest `agent wait` per call |
 | `PI_ANTIGRAVITY_LOG` | off | `1` writes `/tmp/pi-antigravity-<pid>.jsonl` (no message text) |
-| `PI_ANTIGRAVITY_CONFIG` | `~/.pi/agent/pi-agy-acp.json` | File with the "always" folders (`additionalDirectories`) |
+| `PI_ANTIGRAVITY_CONFIG` | `~/.pi/agent/pi-agy-acp.json` | File with the "always" folders (`additionalDirectories`) and the sandbox settings |
+| `PI_ANTIGRAVITY_SANDBOX` | `off` | `bwrap` runs agy in bubblewrap (see Sandbox) |
 
 ## License
 

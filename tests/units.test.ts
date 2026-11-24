@@ -305,3 +305,48 @@ test("prices: Pi's registry first, then the pi.dev list (saved for a day)", asyn
   assert.equal((await again.price("gemini-4-neon"))?.input, 3);
   assert.equal(urls.length, 3);
 });
+
+test("sandbox: config and bwrap arguments", async () => {
+  const { bwrapArgs, sandboxConfig } = await import("../src/sandbox.ts");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-sb-")), "c.json");
+  assert.equal(sandboxConfig({}, file).mode, "off");
+  assert.equal(sandboxConfig({ PI_ANTIGRAVITY_SANDBOX: "bwrap" }, file).mode, "bwrap");
+  fs.writeFileSync(file, JSON.stringify({ sandbox: "bwrap", sandboxReadOnly: ["~/.vite-plus"], sandboxReadWrite: ["/data"] }));
+  const cfg = sandboxConfig({}, file, "/home/u");
+  assert.deepEqual(cfg, { mode: "bwrap", readOnly: ["/home/u/.vite-plus"], readWrite: ["/data"] });
+  assert.equal(sandboxConfig({ PI_ANTIGRAVITY_SANDBOX: "off" }, file).mode, "off");
+
+  const a = bwrapArgs({
+    home: "/home/u",
+    uid: 1000,
+    workspace: ["/home/u/p", "/home/u/wt/a", "/home/u/p/.git"],
+    readOnly: ["/home/u/.nix-profile", "/home/u/p"],
+    readWrite: ["/home/u/.gemini"],
+    settingsFile: "/run/x/settings.json",
+    busSocket: "/run/x/bus",
+    rootLinks: { "/bin": "usr/bin", "/lib64": "usr/lib64" },
+    unsetEnv: ["OPENAI_API_KEY"],
+    command: ["/nix/store/x/bin/agy", "acp"],
+  });
+  const s = a.join(" ");
+  // home is empty; only the listed folders come back.
+  assert.ok(s.includes("--tmpfs /home/u"));
+  assert.ok(s.indexOf("--tmpfs /home/u") < s.indexOf("--bind /home/u/p /home/u/p"));
+  // the cwd is read-write even if also listed read-only, and must exist.
+  assert.ok(s.includes("--bind /home/u/p /home/u/p") && !s.includes("--ro-bind-try /home/u/p /home/u/p"));
+  // parents before children: the git dir comes after its project.
+  assert.ok(s.indexOf("--bind /home/u/p /home/u/p") < s.indexOf("--bind-try /home/u/p/.git"));
+  assert.ok(s.includes("--symlink usr/bin /bin") && s.includes("--ro-bind-try /sbin /sbin"));
+  assert.ok(s.includes("--ro-bind /run/x/settings.json /home/u/.gemini/antigravity-cli/settings.json"));
+  assert.ok(s.indexOf("--bind-try /home/u/.gemini") < s.indexOf("/home/u/.gemini/antigravity-cli/settings.json"));
+  assert.ok(s.includes("--ro-bind /run/x/bus /run/user/1000/bus"));
+  assert.ok(s.includes("--unsetenv OPENAI_API_KEY") && s.includes("--unsetenv SSH_AUTH_SOCK"));
+  assert.ok(s.includes("--chdir /home/u/p"));
+  assert.deepEqual(a.slice(-3), ["--", "/nix/store/x/bin/agy", "acp"]);
+  // no D-Bus proxy: the host bus is not passed in.
+  const b = bwrapArgs({ home: "/h", uid: 1, workspace: ["/w"], readOnly: [], readWrite: [], rootLinks: {}, unsetEnv: [], command: ["agy"] });
+  assert.ok(b.join(" ").includes("--unsetenv DBUS_SESSION_BUS_ADDRESS"));
+});

@@ -12,6 +12,7 @@ import { log } from "./log.ts";
 import { catalogFromSession, type CatalogEntry } from "./models.ts";
 import { type Subagent, SubagentWatcher } from "./subagents.ts";
 import { Prices } from "./prices.ts";
+import { type SandboxConfig, sandboxConfig, sandboxLaunch, stopSandbox, type Workspace } from "./sandbox.ts";
 import { Translator } from "./translate.ts";
 
 export const SESSION_ENTRY = "antigravity-session";
@@ -75,6 +76,12 @@ export class Runtime {
   extraEnv: Record<string, string> = {};
   /** MCP servers for session/new and session/resume (Pi's agent tool). */
   mcpServers: () => unknown[] = () => [];
+  /** Runs agy in bubblewrap when on (PI_ANTIGRAVITY_SANDBOX=bwrap). */
+  sandbox: SandboxConfig = sandboxConfig();
+  /** The workspace that the running agy was started for (sandbox mounts). */
+  private launchedFor: string | undefined;
+  /** A folder for scratch sessions that agy can see (in the sandbox too). */
+  private scratch: string | undefined;
   /** API-equivalent prices, for the cost that Pi counts. */
   prices = new Prices();
   /** Extra workspace folders: child agents' folders and folders that you allowed. */
@@ -104,13 +111,37 @@ export class Runtime {
     return this.agy?.alive ? this.agy : undefined;
   }
 
+  /** The workspace for a new agy process: the bound session's, else Pi's cwd. */
+  private workspace(): Workspace {
+    const cwd = this.binding?.cwd ?? this.ctx?.cwd ?? process.cwd();
+    return { cwd, dirs: this.dirs.list(cwd) };
+  }
+
   async ensure(): Promise<AgyProcess> {
     this.touch();
     if (this.agy?.alive) return this.agy;
     if (this.starting) return this.starting;
+    this.starting = this.spawnAgy().finally(() => {
+      this.starting = undefined;
+    });
+    return this.starting;
+  }
+
+  private async spawnAgy(): Promise<AgyProcess> {
     const l = this.launch();
-    this.starting = AgyProcess.start(
-      { command: l.command, args: l.args, env: { ...l.env, ...this.extraEnv } },
+    let { command, args } = l;
+    if (this.sandbox.mode === "bwrap") {
+      const ws = this.workspace();
+      const s = await sandboxLaunch(ws, this.sandbox, command, args);
+      ({ command, args } = s);
+      this.scratch = s.scratch;
+      this.launchedFor = [ws.cwd, ...ws.dirs].join("\n");
+    } else {
+      this.scratch = undefined;
+      this.launchedFor = undefined;
+    }
+    return AgyProcess.start(
+      { command, args, env: { ...l.env, ...this.extraEnv } },
       {
         permission: (r) => this.permission(r),
         readTextFile: (p) => this.readTextFile(p),
@@ -130,14 +161,11 @@ export class Runtime {
           }
         });
         return agy;
-      })
-      .finally(() => {
-        this.starting = undefined;
       });
-    return this.starting;
   }
 
   stop() {
+    stopSandbox();
     clearTimeout(this.idleTimer);
     this.subagents.stop();
     this.unsubscribe?.();
@@ -163,6 +191,11 @@ export class Runtime {
     // restarts agy and resumes the session, as T3 Code does. Between turns only.
     if (this.binding?.cwd === cwd && this.unsubscribe && dirsKey !== this.sentDirs && !this.activePrompt) {
       log({ event: "dirs_restart", count: additionalDirectories.length });
+      this.restartAgy();
+    }
+    // In the sandbox, agy sees only the folders that it was started with.
+    if (this.agy?.alive && this.launchedFor !== undefined && this.launchedFor !== [cwd, ...additionalDirectories].join("\n") && !this.activePrompt) {
+      log({ event: "sandbox_restart" });
       this.restartAgy();
     }
     const agy = await this.ensure();
@@ -284,7 +317,8 @@ export class Runtime {
   /** A scratch session to read the catalog and check sign-in. */
   async probe(): Promise<{ catalog: CatalogEntry[]; tier?: string } | undefined> {
     const agy = await this.ensure();
-    const dir = await fs.mkdtemp(path.join((await import("node:os")).tmpdir(), "pi-antigravity-"));
+    // In the sandbox, the host /tmp is not visible; use the scratch folder.
+    const dir = await fs.mkdtemp(path.join(this.scratch ?? (await import("node:os")).tmpdir(), "pi-antigravity-"));
     try {
       const r = await agy.newSession(dir);
       this.absorb(r, { modeAndOptionsOnly: true });
