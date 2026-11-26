@@ -51,6 +51,24 @@ function readJson(file: string): any {
   }
 }
 
+/** The time of a transcript's first step (agy rewrites the record file, so its time is not the start). */
+function firstStepAt(file: string): number | undefined {
+  try {
+    const fd = fs.openSync(file, "r");
+    try {
+      const buf = Buffer.alloc(16 * 1024);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      const line = buf.subarray(0, n).toString("utf8").split("\n")[0];
+      const at = Date.parse(JSON.parse(line)?.created_at ?? "");
+      return Number.isFinite(at) ? at : undefined;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 const mtime = (file: string) => {
   try {
     return fs.statSync(file).mtimeMs;
@@ -112,7 +130,7 @@ export function readSubagents(parent: string, brain = brainDir()): Subagent[] {
       type: rec.subagentDescriptor?.typeName,
       status: killed ? "killed" : idle ? "idle" : "working",
       lastReply: reply?.text || undefined,
-      startedAt: mtime(path.join(dir, n)),
+      startedAt: firstStepAt(transcript) ?? mtime(path.join(dir, n)),
       updatedAt,
     });
   }

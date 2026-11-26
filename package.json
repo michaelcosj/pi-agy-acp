@@ -13,6 +13,7 @@
   "files": [
     "src",
     "bin/mcp-bridge.mjs",
+    "bin/agy-subagent-view.mjs",
     "README.md"
   ],
   "pi": {

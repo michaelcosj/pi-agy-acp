@@ -26,7 +26,8 @@ Needs Node 22.19+, the `agy` CLI, and an interactive Pi session. Print and RPC m
 - **agy commands:** `/agy <command> [args]`, for example `/agy goal …`. `/compact` runs agy's own compaction, and Pi shows agy's summary as a collapsed compaction entry.
 - **Background work:** when agy continues by itself, Pi shows the result as a message.
 - **Pi's tools:** Gemini can call Pi's tools and your extensions' tools, for example `questionnaire`, `web_search`, MCP tools, or an `agent` tool. See [Pi's tools](#pis-tools).
-- **agy subagents:** agy's own subagents and swarm members show as read-only `agy-<role>` rows in the agent list. `/agy-subagents` lists them.
+- **agy subagents:** agy's own subagents and swarm members show as read-only `agy-<role>` rows in the agent list. Subagents that agy stopped (killed) are not in the list. Enter on a row opens the subagent's transcript in a Rex floating pane that follows new steps (`q` closes it); outside Rex, it opens in Pi. `/agy-subagents` lists all of them, also the stopped ones.
+- **Tool status:** the `agy: <tool>` line below the editor shows the agy tool that runs now. It clears when the tool ends.
 - **Status:** `/antigravity-status` shows sign-in, tier, quota, session, automatic turns, and subagents.
 - **Suspension stop:** when Google's suspension notice arrives, all Antigravity turns and Pi tool calls from agy stop.
 

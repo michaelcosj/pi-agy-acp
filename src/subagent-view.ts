@@ -7,7 +7,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Runtime } from "./runtime.ts";
-import { readTranscript, type Subagent, transcriptLines } from "./subagents.ts";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { inRexPane, openFloat } from "./rex.ts";
+import { brainDir, readTranscript, type Subagent, transcriptLines } from "./subagents.ts";
+
+const VIEWER = fileURLToPath(new URL("../bin/agy-subagent-view.mjs", import.meta.url));
 
 export const SOURCE = "agy";
 
@@ -24,13 +29,14 @@ export function rowNames(list: Subagent[]): Map<string, string> {
   return out;
 }
 
+/** Rows for agent-bridge's list. Killed subagents stay out, as in agy's own list
+ *  (agy keeps their records; /agy-subagents still shows them). */
 export function rosterRows(list: Subagent[]) {
   const names = rowNames(list);
-  return list.map((s) => ({
+  return list.filter((s) => s.status !== "killed").map((s) => ({
     name: names.get(s.id)!,
     title: `${s.role} (agy subagent)`,
-    status: s.status === "working" ? "working" : s.status === "killed" ? "crashed" : "idle",
-    message: s.status === "killed" ? "killed" : undefined,
+    status: s.status === "working" ? "working" : "idle",
     runStartedAt: s.status === "working" ? s.startedAt : undefined,
     runMs: s.status === "working" ? undefined : Math.max(0, s.updatedAt - s.startedAt),
   }));
@@ -48,6 +54,17 @@ export function registerSubagentView(pi: ExtensionAPI, runtime: Runtime): () => 
   async function show(id: string) {
     const ctx = ctxRef;
     if (!ctx?.hasUI) return;
+    // In Rex: a floating pane that follows the transcript.
+    const parent = runtime.boundSessionId();
+    if (inRexPane() && parent) {
+      try {
+        const s = runtime.subagents.list.find((x) => x.id === id);
+        await openFloat(`agy: ${s?.role ?? id.slice(0, 8)}`, [process.execPath, VIEWER, brainDir(), parent, id], ctx.cwd ?? path.dirname(VIEWER));
+        return;
+      } catch (e) {
+        ctx.ui.notify?.(`Rex float failed, showing it here: ${(e as Error).message}`, "warning");
+      }
+    }
     const lines = () => {
       const s = runtime.subagents.list.find((x) => x.id === id);
       const head = s

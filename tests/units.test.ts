@@ -204,6 +204,7 @@ test("agy subagents from its records", async () => {
   assert.equal(byRole.Tester.status, "working");
   assert.deepEqual(transcriptLines(readTranscript(a, brain)), ["message: Reply seven.", "▸ view_file", "reply: seven"]);
   const rows = rosterRows(list);
+  assert.deepEqual(rosterRows([{ ...list[0], status: "killed" }]), []);
   assert.deepEqual(rows.map((r) => [r.name, r.status]).sort(), [["agy-counter", "idle"], ["agy-tester", "working"]]);
   assert.deepEqual([...rowNames([{ ...list[0], role: "x" }, { ...list[1], role: "x" }]).values()], ["agy-x", "agy-x-2"]);
   assert.deepEqual(readSubagents("not-an-id", brain), []);

@@ -107,6 +107,8 @@ export class Runtime {
     (list) => this.onSubagents?.(list),
   );
   onSubagents: ((list: Subagent[]) => void) | undefined;
+  /** The agy session that Pi's session is bound to. */
+  boundSessionId = () => this.binding?.sessionId;
 
   private agy: AgyProcess | undefined;
   private starting: Promise<AgyProcess> | undefined;
