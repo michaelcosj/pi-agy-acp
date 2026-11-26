@@ -64,12 +64,22 @@ Set `PI_ANTIGRAVITY_SANDBOX=bwrap`, or `"sandbox": "bwrap"` in `~/.pi/agent/pi-a
 | `~/.gemini`, `~/.config/antigravity`, `~/.cache/antigravity` | read-write |
 | The rest of your home (`~/.ssh`, `~/.pi/agent/auth.json`, other projects), the host `/tmp` | not there |
 | Env vars with `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` in the name, and `SSH_AUTH_SOCK` | removed |
-| The desktop keyring (agy's sign-in) | through `xdg-dbus-proxy`, only `org.freedesktop.secrets` |
+| The desktop keyring (agy's sign-in) | through `xdg-dbus-proxy`, only `org.freedesktop.secrets`. The filter allows the whole service, so agy can also ask for other secrets in the keyring |
 | Network | the same as the host, so agy's traffic to Google does not change |
 
 Inside the sandbox, agy gets a copy of its settings with `enableTerminalSandbox: false`. agy's own terminal sandbox cannot start a Nix-built agy, and bwrap already contains every agy process. The host agy and its settings do not change. A change of the cwd or the extra folders restarts agy between turns with the new mounts.
 
 Add folders in `~/.pi/agent/pi-agy-acp.json`: `"sandboxReadOnly": ["~/tools"]`, `"sandboxReadWrite": ["/data"]`. Needs `bwrap` and `xdg-dbus-proxy` (Fedora installs both with Flatpak).
+
+### GitHub CLI in the sandbox
+
+`gh` does not work in the sandbox by default: `~/.config/gh` is not there, so `gh` says `gh auth login`. To let agy use your GitHub account, add the folder as read-only:
+
+```json
+{ "sandbox": "bwrap", "sandboxReadOnly": ["~/.config/gh"] }
+```
+
+`gh` then gets its token from the keyring (through the same D-Bus proxy) or from `hosts.yml`. Restart Pi after the change. `git push` over HTTPS uses git's own credential helper, which is not changed by this.
 
 ## How it works
 
