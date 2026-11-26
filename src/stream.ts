@@ -200,6 +200,13 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
       output.rawStopReason = result.stopReason;
       const usage = usageFrom(result.usage ?? (result._meta as any)?.usage);
       if (usage) {
+        // agy reports the sum of all model calls in the turn. Pi reads
+        // totalTokens as the context size, so a turn with many tool calls
+        // looked like many times the window (for example 162%) and made
+        // Pi start auto-compaction. Use agy's own context size for it; the
+        // token counts stay the turn's sums, for the cost.
+        const ctx = runtime.contextUsage;
+        if (ctx) usage.totalTokens = ctx.used;
         output.usage = usage;
         // API-equivalent cost: you pay a subscription, not per token.
         const p = await price;

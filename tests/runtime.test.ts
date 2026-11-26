@@ -119,6 +119,11 @@ test("streams thinking and text, sets the title, reads usage", async () => {
   );
   assert.equal((result.content[1] as any).text, "Hi there");
   assert.equal(result.usage.totalTokens, 15);
+  // agy's usage_update gives the context size: Pi's context meter uses it, not the turn's sum.
+  runtime.gate.arm("hello ctx");
+  const two = await run(runtime, [user("hello"), result, user("hello ctx")]);
+  assert.equal(two.result.usage.totalTokens, 9);
+  assert.equal(two.result.usage.input, 10);
   assert.equal(calls.name, "Greeting");
   assert.ok(events.some((e) => e.type === "thinking_delta"));
   assert.equal(runtime.binding?.sessionId, "s1");

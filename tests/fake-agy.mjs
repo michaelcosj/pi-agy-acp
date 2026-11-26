@@ -113,6 +113,7 @@ rl.on("line", async (line) => {
         update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hi " } });
         update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "there" } });
         update(sid, { sessionUpdate: "session_info_update", title: "Greeting" });
+        if (/ctx/.test(text)) update(sid, { sessionUpdate: "usage_update", used: 9, size: 1048576 });
         return send({ id: m.id, result: { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } } });
       }
       if (/\btool\b/.test(text) && !/pi-tool|Result of /.test(text)) {

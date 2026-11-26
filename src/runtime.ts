@@ -354,7 +354,14 @@ export class Runtime {
 
   // ---- updates ----
 
+  /** agy's last context size report (ACP usage_update): tokens in its context now, and its window. */
+  contextUsage: { used: number; size: number } | undefined;
+
   private onUpdate(n: SessionNotification) {
+    const u = n.update as any;
+    if (u.sessionUpdate === "usage_update" && typeof u.used === "number" && typeof u.size === "number" && u.size > 0) {
+      this.contextUsage = { used: u.used, size: u.size };
+    }
     this.touch();
     this.police(n);
     if (this.activePrompt && this.activePrompt.sessionId === n.sessionId) {
