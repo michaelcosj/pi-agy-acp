@@ -74,9 +74,9 @@ export function isPiTool(t: { title?: string }): boolean {
   return PI_TOOL_TITLE.test((t.title ?? "").trim());
 }
 
-const SUBAGENT_TITLE = /\b(invoke_subagent|start_subagent)\b/;
+const SUBAGENT_TITLE = /\b(invoke_subagent|start_subagent|swarm\w*)\b/;
 
-/** An ACP tool call that starts an agy subagent. */
+/** An ACP tool call that starts an agy subagent or works on a swarm (members are subagents). */
 export function isSubagentTool(t: { title?: string; name?: string; rawInput?: unknown }): boolean {
   return SUBAGENT_TITLE.test(t.title ?? "") || SUBAGENT_TITLE.test((t as any).name ?? "");
 }

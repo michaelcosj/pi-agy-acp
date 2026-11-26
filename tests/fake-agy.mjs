@@ -171,6 +171,17 @@ rl.on("line", async (line) => {
         update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `answer ${lastMcpAnswer} | prompt ${text.replace(/\n/g, " ")}` } });
         return send({ id: m.id, result: { stopReason: "end_turn" } });
       }
+      // "agy-mcp <server> <tool>" → asks to call one of agy's own MCP tools.
+      const own = /^agy-mcp (\S+) (\S+)$/.exec(text.trim());
+      if (own) {
+        const r = await request("session/request_permission", {
+          sessionId: sid,
+          toolCall: { toolCallId: "om", title: `MCP Tool ${own[2]}`, kind: "other", rawInput: { ServerName: `"${own[1]}"`, ToolName: `"${own[2]}"` } },
+          options: [{ optionId: "a", name: "Allow", kind: "allow_once" }, { optionId: "r", name: "Deny", kind: "reject_once" }],
+        });
+        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `outcome ${r?.outcome?.optionId}` } });
+        return send({ id: m.id, result: { stopReason: "end_turn" } });
+      }
       if (/^pi-agent$/.test(text.trim())) {
         const r = await request("session/request_permission", {
           sessionId: sid,

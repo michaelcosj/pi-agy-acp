@@ -5,10 +5,12 @@ import path from "node:path";
 import { AgyProcess, isAuthRequired } from "./acp/agent.ts";
 import type { ConfigOption, NewSessionResult, PermissionRequest, PermissionResponse, SessionNotification } from "./acp/types.ts";
 import { isBanNotice } from "./ban.ts";
-import { addAlways, Dirs, DIRS_ENTRY, inside, requestPaths, rootOf, tooWide } from "./dirs.ts";
+import { addAlways, Dirs, DIRS_ENTRY, inside, requestPaths, rootOf, stableRoot, tooWide } from "./dirs.ts";
 import { TurnGate } from "./gate.ts";
 import { isPiTool, isSubagentTool } from "./agy-config.ts";
 import type { McpServerHandle } from "./mcp.ts";
+import { agyMcpCall, agyServerKeys, allowedByRules, duplicatePrefixes, mcpPaths, piServerKeys, readAgyRules } from "./mcp-config.ts";
+import type { PiToolDef } from "./tools.ts";
 import { log } from "./log.ts";
 import { catalogFromSession, type CatalogEntry } from "./models.ts";
 import { type Subagent, SubagentWatcher } from "./subagents.ts";
@@ -65,7 +67,7 @@ export function launchFromEnv(env: Record<string, string | undefined> = process.
 export class Runtime {
   readonly gate = new TurnGate();
   ctx: UiLike | undefined;
-  pi: { sendMessage: (m: any, o?: any) => void; appendEntry: (t: string, d?: unknown) => void; setSessionName: (n: string) => void; getSessionName: () => string | undefined } | undefined;
+  pi: { sendMessage: (m: any, o?: any) => void; appendEntry: (t: string, d?: unknown) => void; setSessionName: (n: string) => void; getSessionName: () => string | undefined; getMcpServers?: () => { name: string; config: unknown }[] } | undefined;
   binding: Binding | undefined;
   /** Prompt-scoped state; undefined when no prompt is open. */
   activePrompt: { sessionId: string; translator: Translator } | undefined;
@@ -80,6 +82,10 @@ export class Runtime {
   mcpServers: () => unknown[] = () => [];
   /** Pi's MCP server: Pi's tools for agy. */
   mcp: McpServerHandle | undefined;
+  /** Pi's tools for agy now. agy gets them only when it opens the session
+   *  (start or restart), so its tool list, and so its prompt cache, stays the
+   *  same during one agy process. */
+  piTools: (() => PiToolDef[]) | undefined;
   /** Runs agy in bubblewrap when on (PI_ANTIGRAVITY_SANDBOX=bwrap). */
   sandbox: SandboxConfig = sandboxConfig();
   /** The workspace that the running agy was started for (sandbox mounts). */
@@ -209,6 +215,8 @@ export class Runtime {
     }
     let fresh = false;
     let sessionId: string | undefined;
+    // agy connects to the MCP servers here. Pi's tool list stays fixed until the next open.
+    if (this.mcp && this.piTools) this.mcp.setTools(this.piTools());
     if (this.binding && this.binding.cwd === cwd) {
       try {
         const r = await agy.resumeSession(this.binding.sessionId, cwd, { mcpServers: this.mcpServers(), additionalDirectories });
@@ -450,6 +458,21 @@ export class Runtime {
 
   // ---- agent → client requests ----
 
+  /** Tool name prefixes of Pi's MCP servers that agy also has (same URL or command). */
+  duplicateMcp(cwd: string): string[] {
+    const p = this.mcpPaths(cwd);
+    let registered: { name: string; config: unknown }[] = [];
+    try {
+      registered = this.pi?.getMcpServers?.() ?? [];
+    } catch {}
+    const out = duplicatePrefixes(piServerKeys(p.piConfigs, registered), agyServerKeys(p.agyServers));
+    if (out.length) log({ event: "mcp_duplicates", prefixes: out });
+    return out;
+  }
+
+  /** agy's and Pi's MCP config files (tests replace it). */
+  mcpPaths = (cwd: string) => mcpPaths(cwd);
+
   private async permission(r: PermissionRequest): Promise<PermissionResponse> {
     const ctx = this.ctx;
     // Pi's tools: approve here; Pi runs them with its own checks. agy asks for
@@ -463,6 +486,13 @@ export class Runtime {
     }
     const allowOnce = r.options?.find((o) => o.kind === "allow_once") ?? r.options?.find((o) => o.kind === "allow_always");
     const cwd = this.binding?.cwd ?? ctx?.cwd ?? process.cwd();
+    // agy's own MCP tools: apply agy's mcp(server/tool) allow rules, which it ignores over ACP.
+    const paths_ = this.mcpPaths(cwd);
+    const call = allowOnce ? agyMcpCall(r.toolCall ?? {}, paths_.agyToolCache) : undefined;
+    if (call && allowedByRules(readAgyRules(paths_.agySettings), call.server, call.tool)) {
+      log({ event: "permission_auto", tool: "agy_rule" });
+      return { outcome: { outcome: "selected", optionId: allowOnce!.optionId } };
+    }
     const paths = requestPaths(r, cwd);
     // A folder that you allowed, which agy gets only at the next turn.
     if (allowOnce && this.dirs.covers(paths, cwd)) {
@@ -480,7 +510,9 @@ export class Runtime {
     const root = allowOnce && outside.length ? await rootOf(outside[0]) : undefined;
     const same = root && outside.every((p) => inside(p, root));
     const parent = root && path.dirname(root);
-    const sessionLabel = same && !tooWide(root!) ? `Allow ${tilde(root!)} for this session` : undefined;
+    // For this session: the stable folder (all worktrees of the project), so new worktrees do not restart agy.
+    const sessionDir = root && stableRoot(root);
+    const sessionLabel = same && !tooWide(sessionDir!) ? `Allow ${tilde(sessionDir!)} for this session` : undefined;
     const alwaysLabel = same && parent && !tooWide(parent) ? `Always allow ${tilde(parent)} (all sessions)` : undefined;
     const extra = [sessionLabel, alwaysLabel].filter((x): x is string => !!x);
     if (extra.length) labels.splice(labels.indexOf(allowOnce!.name) + 1, 0, ...extra);
@@ -493,7 +525,7 @@ export class Runtime {
         } catch (e) {
           ctx.ui.notify(`Could not save ${parent}: ${(e as Error).message}`, "error");
         }
-      } else if (this.dirs.add(root!, cwd)) this.pi?.appendEntry(DIRS_ENTRY, { dirs: this.dirs.session });
+      } else if (this.dirs.add(sessionDir!, cwd)) this.pi?.appendEntry(DIRS_ENTRY, { dirs: this.dirs.session });
       return { outcome: { outcome: "selected", optionId: allowOnce!.optionId } };
     }
     const option = r.options.find((o) => o.name === choice);
@@ -534,7 +566,7 @@ function tilde(p: string): string {
 
 /** A child agent's folder joins agy's workspace at the next turn. */
 export function addChildDir(runtime: Runtime, dir: unknown, cwd: string): boolean {
-  if (typeof dir !== "string" || !path.isAbsolute(dir) || !runtime.dirs.add(dir, cwd)) return false;
+  if (typeof dir !== "string" || !path.isAbsolute(dir) || !runtime.dirs.add(stableRoot(dir), cwd)) return false;
   runtime.pi?.appendEntry(DIRS_ENTRY, { dirs: runtime.dirs.session });
   return true;
 }

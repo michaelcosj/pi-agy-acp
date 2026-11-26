@@ -35,6 +35,9 @@ function setup(opts: { select?: string; confirm?: boolean; hasUI?: boolean; auth
   runtime.ctx = ctx;
   // Tests do not read the user's pi-agy-acp.json: no sandbox.
   runtime.sandbox = { mode: "off", readOnly: [], readWrite: [] };
+  // ... nor the user's MCP config files.
+  const none = path.join(process.cwd(), "tests", ".no-such-dir");
+  runtime.mcpPaths = () => ({ agyServers: path.join(none, "a.json"), agySettings: path.join(none, "s.json"), agyToolCache: none, piConfigs: [] });
   live.push(runtime);
   runtime.pi = {
     sendMessage: (m, o) => calls.sent.push({ ...m, options: o }),
@@ -348,4 +351,62 @@ test("a Pi tool call: agy's turn is cancelled and Pi's turn ends with the call",
   assert.equal(runtime.gate.autoTurns, before);
   runtime.stop();
   mcp.close();
+});
+
+test("agy's own MCP tools: agy's mcp(server/tool) allow rules apply, others ask", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-rules-"));
+  const settings = path.join(dir, "settings.json");
+  fs.writeFileSync(settings, JSON.stringify({ permissions: { allow: ["mcp(doop/*)", "mcp(other/read)"], deny: ["mcp(doop/delete_frame)"] } }));
+  const { runtime, calls } = setup({ select: "Deny" });
+  runtime.mcpPaths = () => ({ agyServers: path.join(dir, "none.json"), agySettings: settings, agyToolCache: dir, piConfigs: [] });
+  const ask = async (prompt: string) => {
+    runtime.gate.arm(prompt);
+    return (await run(runtime, [user(prompt)])).result.content.map((b: any) => b.text ?? "").join("");
+  };
+  assert.match(await ask("agy-mcp doop get_canvas"), /outcome a/);
+  assert.match(await ask("agy-mcp other read"), /outcome a/);
+  assert.equal(calls.select.length, 0);
+  assert.match(await ask("agy-mcp other write"), /outcome r/);
+  assert.match(await ask("agy-mcp doop delete_frame"), /outcome r/);
+  assert.equal(calls.select.length, 2);
+  runtime.stop();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("Pi's tools for agy: fixed for one agy process, without servers that agy has", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-dup-"));
+  fs.writeFileSync(path.join(dir, "agy.json"), JSON.stringify({ mcpServers: { doop: { serverUrl: "https://d.example/mcp" } } }));
+  fs.writeFileSync(path.join(dir, "pi.json"), JSON.stringify({ mcpServers: { doop: { url: "https://d.example/mcp/" }, docs: { url: "https://other.example/mcp" } } }));
+  const { startMcpServer } = await import("../src/mcp.ts");
+  const mcp = await startMcpServer();
+  const { runtime } = setup();
+  runtime.mcpPaths = () => ({ agyServers: path.join(dir, "agy.json"), agySettings: path.join(dir, "s.json"), agyToolCache: dir, piConfigs: [path.join(dir, "pi.json")] });
+  runtime.mcp = mcp;
+  runtime.mcpServers = () => [mcp.acpEntry()];
+  const t = (name: string) => ({ name, description: name, parameters: { type: "object", properties: {} } });
+  const go = async (messages: any[], tools: any[]) => {
+    const s = streamAntigravity(runtime, model, { messages, tools } as any, {});
+    for await (const _ of s);
+    return s.result();
+  };
+  const text = (r: any) => r.content.map((b: any) => b.text ?? "").join("");
+  runtime.gate.arm("pi-tools");
+  const one = await go([user("pi-tools")], [t("questionnaire"), t("mcp__doop__get_canvas"), t("mcp__docs__search"), t("tool_search")]);
+  assert.match(text(one), /tools questionnaire,mcp__docs__search$/);
+  // A new tool (for example from tool_search) waits for the next agy process.
+  runtime.gate.arm("pi-tools");
+  const msgs = [user("pi-tools"), one, user("pi-tools")];
+  const two = await go(msgs, [t("questionnaire"), t("mcp__docs__search"), t("web_search")]);
+  assert.match(text(two), /tools questionnaire,mcp__docs__search$/);
+  runtime.stop();
+  runtime.gate.arm("pi-tools");
+  const three = await go([...msgs, two, user("pi-tools")], [t("questionnaire"), t("mcp__docs__search"), t("web_search")]);
+  assert.match(text(three), /tools questionnaire,mcp__docs__search,web_search$/);
+  runtime.stop();
+  mcp.close();
+  fs.rmSync(dir, { recursive: true, force: true });
 });

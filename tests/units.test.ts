@@ -122,6 +122,8 @@ test("permission title", () => {
 test("subagent tool calls are recognized", () => {
   assert.ok(isSubagentTool({ title: "Run invoke_subagent" }));
   assert.ok(isSubagentTool({ title: "Running start_subagent" }));
+  assert.ok(isSubagentTool({ title: "Run swarm" }));
+  assert.ok(isSubagentTool({ title: "Run swarm_wait" }));
   assert.ok(!isSubagentTool({ title: "Run npm test" }));
 });
 
@@ -143,6 +145,7 @@ test("Pi tools for agy: no default tools, no codemode, plain schemas", async () 
   ];
   const out = piToolsFrom({ tools });
   assert.deepEqual(out.map((t) => t.name), ["questionnaire", "web_search"]);
+  assert.deepEqual(piToolsFrom({ tools: [...tools, { name: "mcp__doop__x", parameters: {} }, { name: "tool_search", parameters: {} }] }, undefined, ["mcp__doop__"]).map((t) => t.name), ["questionnaire", "web_search"]);
   assert.deepEqual(out[0].inputSchema, { type: "object", properties: { q: { type: "string" } } });
   assert.deepEqual(out[1].inputSchema, { type: "object", properties: {} });
   assert.deepEqual(inputSchema(undefined), { type: "object", properties: {} });
@@ -354,4 +357,65 @@ test("sandbox: config and bwrap arguments", async () => {
   // no D-Bus proxy: the host bus is not passed in.
   const b = bwrapArgs({ home: "/h", uid: 1, workspace: ["/w"], readOnly: [], readWrite: [], rootLinks: {}, unsetEnv: [], command: ["agy"] });
   assert.ok(b.join(" ").includes("--unsetenv DBUS_SESSION_BUS_ADDRESS"));
+});
+
+test("mcp-config: duplicate servers, agy's rules, agy's MCP calls", async () => {
+  const m = await import("../src/mcp-config.ts");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  assert.equal(m.serverKey({ serverUrl: "https://x/mcp/" }), m.serverKey({ url: "https://x/mcp" }));
+  assert.equal(m.serverKey({ command: "browse", args: ["mcp"] }), 'cmd:["browse","mcp"]');
+  assert.equal(m.serverKey({}), undefined);
+  const pi = new Map([["doop", "url:a"], ["my-docs", "url:b"], ["browse", "cmd:c"]]);
+  assert.deepEqual(m.duplicatePrefixes(pi, new Map([["d", "url:a"], ["docs", "url:b"]])), ["mcp__doop__", "mcp__my_docs__"]);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-mcpcfg-"));
+  const f = (n: string, d: unknown) => (fs.writeFileSync(path.join(dir, n), JSON.stringify(d)), path.join(dir, n));
+  const agy = f("agy.json", { mcpServers: { doop: { serverUrl: "https://d" }, off: { serverUrl: "https://o", disabled: true } } });
+  assert.deepEqual([...m.agyServerKeys(agy)], [["doop", "url:https://d"]]);
+  const g = f("g.json", { mcpServers: { doop: { url: "https://d" }, x: { url: "https://x" } } });
+  const p = f("p.json", { mcpServers: { x: { url: "https://x", enabled: false } } });
+  assert.deepEqual([...m.piServerKeys([g, p], [{ name: "doop", config: { url: "https://z" } }, { name: "r", config: { command: "r" } }])], [
+    ["doop", "url:https://d"],
+    ["r", 'cmd:["r"]'],
+  ]);
+  const rules = m.readAgyRules(f("s.json", { permissions: { allow: ["mcp(doop/*)", "mcp(*/get_*)", "read_file(*)", "mcp(bad)"], ask: ["mcp(doop/delete_*)"] } }));
+  assert.equal(rules.allow.length, 2);
+  assert.ok(m.allowedByRules(rules, "doop", "get_canvas") && m.allowedByRules(rules, "other", "get_x"));
+  assert.ok(!m.allowedByRules(rules, "doop", "delete_frame") && !m.allowedByRules(rules, "other", "set_x") && !m.allowedByRules(rules, "doopx", "y"));
+  // calls: from rawInput, from the title and agy's tool cache, never Pi's server
+  fs.mkdirSync(path.join(dir, "cache", "doop"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "cache", "doop", "get_guide.json"), "{}");
+  const cache = path.join(dir, "cache");
+  assert.deepEqual(m.agyMcpCall({ rawInput: { ServerName: '"doop"', ToolName: '"get_frame"' } }, cache), { server: "doop", tool: "get_frame" });
+  assert.deepEqual(m.agyMcpCall({ title: "MCP Tool get_guide" }, cache), { server: "doop", tool: "get_guide" });
+  assert.equal(m.agyMcpCall({ title: "MCP Tool unknown" }, cache), undefined);
+  assert.equal(m.agyMcpCall({ rawInput: { ServerName: "pi", ToolName: "agent" } }, cache), undefined);
+  assert.equal(m.agyMcpCall({ title: "Run npm test" }, cache), undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("stableRoot: a linked worktree gives its folder; other folders stay", async () => {
+  const { stableRoot } = await import("../src/dirs.ts");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-home-"));
+  const main = path.join(home, "Projects", "app");
+  const wts = path.join(home, "wt", "app");
+  fs.mkdirSync(path.join(main, ".git", "worktrees", "feat"), { recursive: true });
+  fs.mkdirSync(path.join(wts, "feat"), { recursive: true });
+  fs.writeFileSync(path.join(wts, "feat", ".git"), `gitdir: ${path.join(main, ".git", "worktrees", "feat")}\n`);
+  assert.equal(stableRoot(path.join(wts, "feat"), home), wts);
+  assert.equal(stableRoot(main, home), main); // main checkout: .git is a folder
+  assert.equal(stableRoot(path.join(home, "Projects"), home), path.join(home, "Projects")); // no repo
+  // a worktree next to the main checkout: its folder holds the main checkout
+  fs.mkdirSync(path.join(home, "Projects", "app-feat"));
+  fs.writeFileSync(path.join(home, "Projects", "app-feat", ".git"), `gitdir: ${path.join(main, ".git", "worktrees", "feat")}\n`);
+  assert.equal(stableRoot(path.join(home, "Projects", "app-feat"), home), path.join(home, "Projects", "app-feat"));
+  // a worktree right in the home folder: too wide
+  fs.mkdirSync(path.join(home, "feat2"));
+  fs.writeFileSync(path.join(home, "feat2", ".git"), `gitdir: ${path.join(main, ".git", "worktrees", "feat")}\n`);
+  assert.equal(stableRoot(path.join(home, "feat2"), home), path.join(home, "feat2"));
+  fs.rmSync(home, { recursive: true, force: true });
 });

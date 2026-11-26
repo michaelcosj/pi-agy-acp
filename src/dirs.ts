@@ -52,6 +52,30 @@ export function tooWide(dir: string, home = os.homedir()): boolean {
   return d === path.parse(d).root || inside(home, d);
 }
 
+/**
+ * A stable folder for a child agent's folder. A linked git worktree gives the
+ * folder that holds it (for example ~/.local/share/worktrees/kojama), so new
+ * worktrees of the project do not change agy's folder list (each change
+ * restarts agy and loses its prompt cache). The worktree itself when that
+ * folder is too wide or holds the main checkout.
+ */
+export function stableRoot(dir: string, home = os.homedir()): string {
+  const d = path.resolve(dir);
+  let gitdir: string | undefined;
+  try {
+    const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(path.join(d, ".git"), "utf8"));
+    gitdir = m ? path.resolve(d, m[1].trim()) : undefined;
+  } catch {
+    return d;
+  }
+  // <main>/.git/worktrees/<name>
+  if (!gitdir || path.basename(path.dirname(gitdir)) !== "worktrees") return d;
+  const main = path.resolve(gitdir, "..", "..", "..");
+  const parent = path.dirname(d);
+  if (tooWide(parent, home) || inside(main, parent)) return d;
+  return parent;
+}
+
 /** The git root of `file`'s folder, or the folder itself outside a repo. */
 export function rootOf(file: string): Promise<string> {
   const dir = fs.statSync(file, { throwIfNoEntry: false })?.isDirectory() ? file : path.dirname(file);

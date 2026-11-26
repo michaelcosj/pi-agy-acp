@@ -16,7 +16,7 @@ import { agyLevelFor, FALLBACK_CATALOG } from "./models.ts";
 import type { Runtime } from "./runtime.ts";
 import { GAP, stopReason, Translator, usageFrom } from "./translate.ts";
 import type { PendingCall } from "./mcp.ts";
-import { piToolsFrom, resultText, runningText } from "./tools.ts";
+import { excludedTools, piToolsFrom, resultText, runningText } from "./tools.ts";
 
 export const LOGIN_HINT = "Antigravity is not signed in. Run `agy` once in a terminal and sign in with Google, then try again.";
 
@@ -109,10 +109,11 @@ export function streamAntigravity(runtime: Runtime, model: Model<any>, context: 
       const { indexes, human, toolResults } = decision;
       const fresh = indexes.map((i) => messages[i]);
 
-      // Pi's tools that agy can call this turn.
-      runtime.mcp?.setTools(piToolsFrom(context as any));
-
+      // Pi's tools for agy, sent when agy opens the session (see Runtime.piTools).
+      // Pi's MCP servers that agy also has stay out: agy uses its own.
       const cwd = runtime.ctx.cwd;
+      runtime.piTools = () => piToolsFrom(context as any, excludedTools(), runtime.duplicateMcp(cwd));
+
       const s = await runtime.session(cwd);
       sessionId = s.sessionId;
 

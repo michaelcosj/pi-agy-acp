@@ -21,23 +21,25 @@ Needs Node 22.19+, the `agy` CLI, and an interactive Pi session. Print and RPC m
 - **Streaming:** text, thinking, one line per tool call, token usage, and session titles. Escape cancels.
 - **Cost:** Pi counts an API-equivalent cost: the turn's tokens at the model maker's API price (Google for Gemini, Anthropic for Claude). You pay a subscription, so this is not a bill. The price comes from Pi's model registry. When the registry has no price for a model, pi-agy-acp gets Pi's catalog from pi.dev, once a day (`~/.pi/agent/state/pi-agy-acp-prices.json`). GPT-OSS has no price and shows $0.
 - **Steering:** a message that you send during a turn goes to agy at once.
-- **Permissions:** agy runs in auto mode. Its permission prompts open as Pi dialogs.
-- **Workspace folders:** agy asks before it touches files outside its workspace. A child agent's folder (for example its worktree) joins the workspace at the next turn. For a file outside the workspace, the dialog also offers "Allow <repo> for this session" and "Always allow <parent folder>". `/antigravity-status` shows the extra folders.
+- **Permissions:** agy runs in auto mode. Its permission prompts open as Pi dialogs. agy ignores the allow rules in its `settings.json` over ACP, so Pi applies agy's `mcp(<server>/<tool>)` rules for agy's own MCP tools (`*` matches any text; `deny` and `ask` rules win). Other rule forms still ask.
+- **Workspace folders:** agy asks before it touches files outside its workspace. A child agent's folder joins the workspace at the next turn. For a linked git worktree, the folder that holds it joins (for example `~/.local/share/worktrees/<project>`), so new worktrees of the project do not change the list. Each change restarts agy, and agy loses its prompt cache. In the sandbox, agy can then read and write all worktrees in that folder. For a file outside the workspace, the dialog also offers "Allow <repo or worktree folder> for this session" and "Always allow <parent folder>". `/antigravity-status` shows the extra folders.
 - **agy commands:** `/agy <command> [args]`, for example `/agy goal …`. `/compact` runs agy's own compaction, and Pi shows agy's summary as a collapsed compaction entry.
 - **Background work:** when agy continues by itself, Pi shows the result as a message.
 - **Pi's tools:** Gemini can call Pi's tools and your extensions' tools, for example `questionnaire`, `web_search`, MCP tools, or an `agent` tool. See [Pi's tools](#pis-tools).
-- **agy subagents:** agy's own subagents show as read-only `agy-<role>` rows in the agent list. `/agy-subagents` lists them.
+- **agy subagents:** agy's own subagents and swarm members show as read-only `agy-<role>` rows in the agent list. `/agy-subagents` lists them.
 - **Status:** `/antigravity-status` shows sign-in, tier, quota, session, automatic turns, and subagents.
 - **Suspension stop:** when Google's suspension notice arrives, all Antigravity turns and Pi tool calls from agy stop.
 
 ## Pi's tools
 
-agy gets each active Pi tool on a local MCP server named `pi`. The list follows Pi: when you turn a tool on or off, agy gets the new list at the next turn.
+agy gets each active Pi tool on a local MCP server named `pi`. agy gets the list when it opens the session (at start, and when it restarts, for example after a folder change or 15 minutes idle). The list stays the same while agy runs, because a new tool list makes agy lose its prompt cache. A tool that you turn on later reaches agy after its next restart.
 
 These tools are not sent:
 
 - Pi's file and shell tools (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`). agy has its own versions.
 - `codemode`. It would get around the sandbox.
+- `tool_search`. The tools that it loads reach agy only after a restart.
+- Tools of a Pi MCP server that agy also has in `~/.gemini/config/mcp_config.json` (the same URL, or the same command and arguments). agy uses its own server.
 - The names in `PI_ANTIGRAVITY_EXCLUDE_TOOLS`.
 
 A call works in four steps:

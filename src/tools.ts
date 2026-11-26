@@ -8,8 +8,10 @@ export interface PiToolDef {
   inputSchema: Record<string, unknown>;
 }
 
-/** Pi's default tools, which agy has its own versions of, and codemode. */
-export const EXCLUDED = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "codemode"]);
+/** Pi's default tools, which agy has its own versions of, codemode, and
+ *  tool_search (agy gets the tools that it loads only at its next restart, see
+ *  Runtime.offerTools, so a search result would name tools that agy lacks). */
+export const EXCLUDED = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "codemode", "tool_search"]);
 const NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** The message that agy gets for a Pi tool call; the result comes in the next prompt. */
@@ -60,7 +62,12 @@ export function excludedTools(env: Record<string, string | undefined> = process.
 }
 
 /** The Pi tools for agy from a model call's context. */
-export function piToolsFrom(context: { messages?: readonly { role: string }[]; tools?: readonly any[] }, exclude = excludedTools()): PiToolDef[] {
+/** `drop`: name prefixes to leave out (Pi's MCP servers that agy also has). */
+export function piToolsFrom(
+  context: { messages?: readonly { role: string }[]; tools?: readonly any[] },
+  exclude = excludedTools(),
+  drop: readonly string[] = [],
+): PiToolDef[] {
   let tools: readonly any[] = [];
   try {
     tools = context.messages ? getCurrentTools(context.messages) : [];
@@ -70,6 +77,7 @@ export function piToolsFrom(context: { messages?: readonly { role: string }[]; t
   const seen = new Set<string>();
   for (const t of tools) {
     if (!t || typeof t.name !== "string" || !NAME.test(t.name) || exclude.has(t.name) || seen.has(t.name)) continue;
+    if (drop.some((p) => t.name.startsWith(p))) continue;
     seen.add(t.name);
     out.push({ name: t.name, description: String(t.description ?? ""), inputSchema: inputSchema(t.parameters) });
   }
