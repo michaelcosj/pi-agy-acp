@@ -79,7 +79,7 @@ Add folders in `~/.pi/agent/pi-agy-acp.json`: `"sandboxReadOnly": ["~/tools"]`, 
 { "sandbox": "bwrap", "sandboxReadOnly": ["~/.config/gh"] }
 ```
 
-`gh` then gets its token from the keyring (through the same D-Bus proxy) or from `hosts.yml`. Restart Pi after the change. `git push` over HTTPS uses git's own credential helper, which is not changed by this.
+`gh` then gets its token from the keyring (through the same D-Bus proxy) or from `hosts.yml`. Restart Pi after the change.
 
 ## How it works
 
