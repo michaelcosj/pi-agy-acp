@@ -10,11 +10,13 @@ import { readUsage, usageLines } from "./usage.ts";
 import { registerSubagentView } from "./subagent-view.ts";
 import { addChildDir, type Binding, launchFromEnv, MODE, Runtime, SESSION_ENTRY, STEER_PREFIX } from "./runtime.ts";
 import { DIRS_ENTRY } from "./dirs.ts";
+import { registerRenderers, STEER_MESSAGE } from "./render.ts";
 
 export default function antigravityExtension(pi: ExtensionAPI): void {
   const runtime = new Runtime();
   runtime.pi = pi as any;
   pi.registerProvider(createAntigravityProvider(runtime));
+  registerRenderers(pi);
   let mcp: McpServerHandle | undefined;
 
   // Google's suspension notice: stop all automatic turns and Pi tool calls.
@@ -118,7 +120,7 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
       void agy.prompt(sessionId, blocks).catch((err) => ctx.ui.notify(`Steer failed: ${(err as Error).message}`, "error"));
       // Display only. triggerTurn false: during a turn, Pi adds it after the
       // turn ends; the default would steer it and start a model call.
-      pi.sendMessage({ customType: "antigravity-steer", content: STEER_PREFIX + event.text, display: true }, { triggerTurn: false });
+      pi.sendMessage({ customType: STEER_MESSAGE, content: STEER_PREFIX + event.text, display: true }, { triggerTurn: false });
       log({ event: "steer" });
       return { action: "handled" };
     }
