@@ -393,8 +393,8 @@ export class Runtime {
     this.checkBan(text);
     log({ event: "wake_end", chars: text.length });
     if (!text) return;
-    // display only: no triggerTurn, so Pi starts no model call.
-    this.pi?.sendMessage({ customType: WAKE_MESSAGE, content: WAKE_PREFIX + text, display: true, details: { sessionId: this.binding?.sessionId } });
+    // Display only: triggerTurn false, so Pi starts no model call (also during a turn).
+    this.pi?.sendMessage({ customType: WAKE_MESSAGE, content: WAKE_PREFIX + text, display: true, details: { sessionId: this.binding?.sessionId } }, { triggerTurn: false });
     // agy wrote this itself, so it is not "unseen" history.
     this.markSeen();
   }
@@ -422,7 +422,7 @@ export class Runtime {
       this.wake = undefined;
       w.translator.finish();
       const text = w.translator.text.trim();
-      if (text) this.pi?.sendMessage({ customType: WAKE_MESSAGE, content: WAKE_PREFIX + text, display: true });
+      if (text) this.pi?.sendMessage({ customType: WAKE_MESSAGE, content: WAKE_PREFIX + text, display: true }, { triggerTurn: false });
       this.ctx?.ui.setStatus("antigravity", undefined);
       this.markSeen();
     }

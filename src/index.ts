@@ -116,7 +116,9 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
       const blocks: any[] = [{ type: "text", text: event.text }];
       for (const img of event.images ?? []) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
       void agy.prompt(sessionId, blocks).catch((err) => ctx.ui.notify(`Steer failed: ${(err as Error).message}`, "error"));
-      pi.sendMessage({ customType: "antigravity-steer", content: STEER_PREFIX + event.text, display: true });
+      // Display only. triggerTurn false: during a turn, Pi adds it after the
+      // turn ends; the default would steer it and start a model call.
+      pi.sendMessage({ customType: "antigravity-steer", content: STEER_PREFIX + event.text, display: true }, { triggerTurn: false });
       log({ event: "steer" });
       return { action: "handled" };
     }

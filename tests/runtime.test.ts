@@ -37,7 +37,7 @@ function setup(opts: { select?: string; confirm?: boolean; hasUI?: boolean; auth
   runtime.sandbox = { mode: "off", readOnly: [], readWrite: [] };
   live.push(runtime);
   runtime.pi = {
-    sendMessage: (m) => calls.sent.push(m),
+    sendMessage: (m, o) => calls.sent.push({ ...m, options: o }),
     appendEntry: (t, d) => calls.entries.push({ t, d: structuredClone(d) }),
     setSessionName: (n) => (calls.name = n),
     getSessionName: () => calls.name,
@@ -182,6 +182,8 @@ test("wake: updates with no prompt open become one display message, no turn", as
   assert.equal(m.customType, "antigravity-wake");
   assert.ok(m.content.startsWith(WAKE_PREFIX));
   assert.match(m.content, /Background work done/);
+  // Display only: Pi must not start or steer a model call with it.
+  assert.equal(m.options?.triggerTurn, false);
   runtime.stop();
 });
 
