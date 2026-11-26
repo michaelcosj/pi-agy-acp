@@ -17,7 +17,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { configPath } from "./dirs.ts";
+import { configPath, expandPath } from "./dirs.ts";
 import { log } from "./log.ts";
 import { BRIDGE } from "./mcp.ts";
 
@@ -99,7 +99,15 @@ export function homeMounts(paths: string[], home: string, pathDirs: Set<string>)
   return { binds: [...binds], links: [...links].map(([p, t]) => [t, p]) };
 }
 
-const expand = (p: string, home: string) => (p === "~" ? home : p.startsWith("~/") ? path.join(home, p.slice(2)) : p);
+/** The extra sandbox folders of a project config (no mode: a project cannot turn the sandbox off). */
+export function projectSandbox(file: string, base: string, home = os.homedir()): { readOnly: string[]; readWrite: string[] } {
+  let data: any = {};
+  try {
+    data = JSON.parse(fs.readFileSync(file, "utf8")) ?? {};
+  } catch {}
+  const list = (x: unknown) => (Array.isArray(x) ? x.flatMap((d) => (typeof d === "string" ? (expandPath(d, home, base) ?? []) : [])) : []);
+  return { readOnly: list(data.sandboxReadOnly), readWrite: list(data.sandboxReadWrite) };
+}
 
 /** From PI_ANTIGRAVITY_SANDBOX (bwrap|off) and the pi-agy-acp config file. Off by default. */
 export function sandboxConfig(env: Record<string, string | undefined> = process.env, file = configPath(env), home = os.homedir()): SandboxConfig {
@@ -108,7 +116,7 @@ export function sandboxConfig(env: Record<string, string | undefined> = process.
     data = JSON.parse(fs.readFileSync(file, "utf8")) ?? {};
   } catch {}
   const raw = (env.PI_ANTIGRAVITY_SANDBOX ?? data.sandbox ?? "off").toString().trim().toLowerCase();
-  const list = (x: unknown) => (Array.isArray(x) ? x.filter((d): d is string => typeof d === "string").map((d) => expand(d, home)) : []);
+  const list = (x: unknown) => (Array.isArray(x) ? x.flatMap((d) => (typeof d === "string" ? (expandPath(d, home) ?? []) : [])) : []);
   return {
     mode: raw === "bwrap" ? "bwrap" : "off",
     readOnly: list(data.sandboxReadOnly),

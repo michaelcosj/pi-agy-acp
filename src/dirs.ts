@@ -18,11 +18,24 @@ export function configPath(env: Record<string, string | undefined> = process.env
   return env.PI_ANTIGRAVITY_CONFIG || path.join(env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent"), "pi-agy-acp.json");
 }
 
-/** The "always" folders from the config file. A bad file gives none. */
-export function readAlways(file = configPath()): string[] {
+/** A project's pi-agy-acp config: <project>/.pi/pi-agy-acp.json. Read only for trusted projects. */
+export function projectConfigPath(cwd: string): string {
+  return path.join(cwd, ".pi", "pi-agy-acp.json");
+}
+
+/** `~` and `~/x` become home paths; a relative path is relative to `base` (none without a base). */
+export function expandPath(p: string, home = os.homedir(), base?: string): string | undefined {
+  const x = p === "~" ? home : p.startsWith("~/") ? path.join(home, p.slice(2)) : p;
+  if (path.isAbsolute(x)) return path.resolve(x);
+  return base ? path.resolve(base, x) : undefined;
+}
+
+/** The "always" folders from a config file. A bad file gives none. `base`: the folder for relative paths. */
+export function readAlways(file = configPath(), base?: string, home = os.homedir()): string[] {
   try {
     const dirs = JSON.parse(fs.readFileSync(file, "utf8"))?.additionalDirectories;
-    return Array.isArray(dirs) ? dirs.filter((d): d is string => typeof d === "string" && path.isAbsolute(d)) : [];
+    if (!Array.isArray(dirs)) return [];
+    return dirs.flatMap((d) => (typeof d === "string" ? (expandPath(d, home, base) ?? []) : []));
   } catch {
     return [];
   }
@@ -104,11 +117,11 @@ export class Dirs {
   /** Folders for this Pi session. */
   session: string[] = [];
 
-  constructor(private readonly always: () => string[] = () => readAlways()) {}
+  constructor(private readonly always: (cwd: string) => string[] = () => readAlways()) {}
 
   /** All extra folders, without the cwd and without folders inside another one. */
   list(cwd: string): string[] {
-    const all = [...new Set([...this.always(), ...this.session].map((d) => path.resolve(d)))];
+    const all = [...new Set([...this.always(cwd), ...this.session].map((d) => path.resolve(d)))];
     return all.filter((d) => !inside(d, cwd) && !all.some((o) => o !== d && inside(d, o))).sort();
   }
 

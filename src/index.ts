@@ -30,6 +30,11 @@ export default function antigravityExtension(pi: ExtensionAPI): void {
 
   function restore(ctx: ExtensionContext) {
     runtime.ctx = ctx as any;
+    try {
+      runtime.projectTrusted = (ctx as any).isProjectTrusted?.() === true;
+    } catch {
+      runtime.projectTrusted = false;
+    }
     runtime.gate.clear();
     let binding: Binding | undefined;
     let dirs: string[] = [];

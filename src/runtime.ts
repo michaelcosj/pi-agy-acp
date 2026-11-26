@@ -5,7 +5,7 @@ import path from "node:path";
 import { AgyProcess, isAuthRequired } from "./acp/agent.ts";
 import type { ConfigOption, NewSessionResult, PermissionRequest, PermissionResponse, SessionNotification } from "./acp/types.ts";
 import { isBanNotice } from "./ban.ts";
-import { addAlways, Dirs, DIRS_ENTRY, inside, requestPaths, rootOf, stableRoot, tooWide } from "./dirs.ts";
+import { addAlways, Dirs, DIRS_ENTRY, inside, projectConfigPath, readAlways, requestPaths, rootOf, stableRoot, tooWide } from "./dirs.ts";
 import { TurnGate } from "./gate.ts";
 import { isPiTool, isSubagentTool } from "./agy-config.ts";
 import type { McpServerHandle } from "./mcp.ts";
@@ -15,7 +15,7 @@ import { log } from "./log.ts";
 import { catalogFromSession, type CatalogEntry } from "./models.ts";
 import { type Subagent, SubagentWatcher } from "./subagents.ts";
 import { Prices } from "./prices.ts";
-import { type SandboxConfig, sandboxConfig, sandboxLaunch, stopSandbox, type Workspace } from "./sandbox.ts";
+import { projectSandbox, type SandboxConfig, sandboxConfig, sandboxLaunch, stopSandbox, type Workspace } from "./sandbox.ts";
 import { Translator } from "./translate.ts";
 
 export const SESSION_ENTRY = "antigravity-session";
@@ -95,7 +95,10 @@ export class Runtime {
   /** API-equivalent prices, for the cost that Pi counts. */
   prices = new Prices();
   /** Extra workspace folders: child agents' folders and folders that you allowed. */
-  readonly dirs = new Dirs();
+  /** Pi trusts the project: its .pi/pi-agy-acp.json is read. */
+  projectTrusted = false;
+  /** The user's "always" folders, and the trusted project's (relative to the project). */
+  readonly dirs = new Dirs((cwd) => [...readAlways(), ...(this.projectTrusted ? readAlways(projectConfigPath(cwd), cwd) : [])]);
   /** The folder list that agy has for the bound session. */
   private sentDirs = "";
   /** Set when Google's suspension notice arrives. Then no more turns run. */
@@ -144,7 +147,9 @@ export class Runtime {
     let { command, args } = l;
     if (this.sandbox.mode === "bwrap") {
       const ws = this.workspace();
-      const s = await sandboxLaunch(ws, this.sandbox, command, args);
+      const proj = this.projectTrusted ? projectSandbox(projectConfigPath(ws.cwd), ws.cwd) : { readOnly: [], readWrite: [] };
+      const cfg = { ...this.sandbox, readOnly: [...this.sandbox.readOnly, ...proj.readOnly], readWrite: [...this.sandbox.readWrite, ...proj.readWrite] };
+      const s = await sandboxLaunch(ws, cfg, command, args);
       ({ command, args } = s);
       this.scratch = s.scratch;
       this.launchedFor = [ws.cwd, ...ws.dirs].join("\n");

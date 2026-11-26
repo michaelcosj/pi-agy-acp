@@ -71,6 +71,21 @@ Inside the sandbox, agy gets a copy of its settings with `enableTerminalSandbox:
 
 Add folders in `~/.pi/agent/pi-agy-acp.json`: `"sandboxReadOnly": ["~/tools"]`, `"sandboxReadWrite": ["/data"]`. Needs `bwrap` and `xdg-dbus-proxy` (Fedora installs both with Flatpak).
 
+### Project config
+
+A project can have its own `.pi/pi-agy-acp.json`. pi-agy-acp reads it only when Pi trusts the project. It adds to the user config, and it can have:
+
+- `additionalDirectories`: folders that are always in agy's workspace for this project. In the sandbox, they are mounted read-write.
+- `sandboxReadOnly` and `sandboxReadWrite`: extra sandbox folders.
+
+Paths can start with `~/` or be relative to the project. A project config cannot turn the sandbox on or off. Example for a project whose worktrees are in `~/.local/share/worktrees/<project>`:
+
+```json
+{ "additionalDirectories": ["~/.local/share/worktrees/kojama"] }
+```
+
+When agy makes a worktree outside its workspace in the sandbox, the files go to the sandbox's temporary home and are lost when agy stops. Add the worktree folder as above.
+
 ### GitHub CLI in the sandbox
 
 `gh` does not work in the sandbox by default: `~/.config/gh` is not there, so `gh` says `gh auth login`. To let agy use your GitHub account, add the folder as read-only:

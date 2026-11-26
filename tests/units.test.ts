@@ -265,6 +265,29 @@ test("dirs: inside, too wide, covers, nested folders", async () => {
   addAlways("/w/a", file);
   addAlways("/w/a", file);
   assert.deepEqual(readAlways(file), ["/w/a"]);
+  // A project config: ~ and paths relative to the project.
+  fs.writeFileSync(file, JSON.stringify({ additionalDirectories: ["~/wt/kojama", "../kojama-scratch", "/abs", 3] }));
+  assert.deepEqual(readAlways(file, "/home/u/p", "/home/u"), ["/home/u/wt/kojama", "/home/u/kojama-scratch", "/abs"]);
+  assert.deepEqual(readAlways(file, undefined, "/home/u"), ["/home/u/wt/kojama", "/abs"]);
+});
+
+test("project config: read only when Pi trusts the project", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { Runtime } = await import("../src/runtime.ts");
+  const { projectSandbox } = await import("../src/sandbox.ts");
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-proj-"));
+  fs.mkdirSync(path.join(proj, ".pi"));
+  const file = path.join(proj, ".pi", "pi-agy-acp.json");
+  fs.writeFileSync(file, JSON.stringify({ sandbox: "off", additionalDirectories: ["../wt"], sandboxReadOnly: ["~/.config/gh"] }));
+  const r = new Runtime(() => ({ command: "true", args: [], env: {} }));
+  const wt = path.resolve(proj, "..", "wt");
+  assert.ok(!r.dirs.list(proj).includes(wt));
+  r.projectTrusted = true;
+  assert.ok(r.dirs.list(proj).includes(wt));
+  assert.deepEqual(projectSandbox(file, proj, "/home/u"), { readOnly: ["/home/u/.config/gh"], readWrite: [] });
+  fs.rmSync(proj, { recursive: true, force: true });
 });
 
 test("prices: Pi's registry first, then the pi.dev list (saved for a day)", async () => {
